@@ -3,12 +3,16 @@ module Concur.Core.FRP where
 import Prelude
 
 import Concur.Core (Widget)
+import Control.Alt ((<|>))
 import Control.Alternative (empty)
 import Control.Cofree (Cofree, mkCofree, tail)
 import Control.Comonad (extract)
 import Data.Either (Either(..), either, hush)
 import Data.Maybe (Maybe(..))
+import Data.Time.Duration (Milliseconds(..))
 import Effect (Effect)
+import Effect.Aff (delay)
+import Effect.Aff.Class (liftAff)
 import Effect.Class (liftEffect)
 
 ----------
@@ -178,3 +182,18 @@ stateLoopS ::
   (s -> Signal v (Either s a)) ->
   Signal v (Maybe a)
 stateLoopS def w = map hush $ loopS (Left def) $ either w (pure <<< Right)
+
+
+-- Debounced output from a widget
+-- wrapped into a signal
+debounce :: forall a v. Monoid v => Number -> a -> (a -> Widget v a) -> Signal v a
+debounce timeoutMs ainit winit = go ainit winit
+  where
+    go a w = step a (go' a w)
+    go' a w = do
+      res <- (Just <$> w a) <|> (Nothing <$ liftAff (delay (Milliseconds timeoutMs)))
+      case res of
+        -- Timeout fired
+        Nothing -> pure (go a w)
+        -- Events fired, but we are still in timeout
+        Just a' -> go' a' w
