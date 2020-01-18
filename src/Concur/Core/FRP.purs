@@ -189,7 +189,11 @@ stateLoopS def w = map hush $ loopS (Left def) $ either w (pure <<< Right)
 debounce :: forall a v. Monoid v => Number -> a -> (a -> Widget v a) -> Signal v a
 debounce timeoutMs ainit winit = go ainit winit
   where
-    go a w = step a (go' a w)
+    go a w = step a do
+      -- Wait until we have a user input
+      -- before starting the timer
+      a' <- w a
+      go' a' w
     go' a w = do
       res <- (Just <$> w a) <|> (Nothing <$ liftAff (delay (Milliseconds timeoutMs)))
       case res of
