@@ -1,6 +1,7 @@
 -- | AJ: This is the same as `Control.Comonad.Cofree` from the `purescript-free` package.
 -- | However, we need to override the applicative and monad instance, and "probably" due to a Purescript bug it's not working.
 -- | The _cofree comonad_ for a `Functor`.
+-- | This version also adds `lazyHead`, `lazyTail`, and `mfix`
 module Control.Cofree
   ( Cofree
   , (:<)
@@ -9,9 +10,12 @@ module Control.Cofree
   , explore
   , exploreM
   , head
+  , lazyHead
   , hoistCofree
   , mkCofree
   , tail
+  , lazyTail
+  , mfix
   , unfoldCofree
   ) where
 
@@ -76,6 +80,21 @@ tail ::
   Cofree f a ->
   f (Cofree f a)
 tail (Cofree c) = snd (force c)
+
+-- | Like `head`, but returns a lazy value
+lazyHead ::
+  forall f a.
+  Cofree f a ->
+  (Lazy a)
+lazyHead (Cofree c) = map fst c
+
+-- | Like `tail`, but returns a lazy value
+lazyTail ::
+  forall f a.
+  Cofree f a ->
+  (Lazy (f (Cofree f a)))
+lazyTail (Cofree c) = map snd c
+
 
 hoistCofree :: forall f g. Functor f => (f ~> g) -> Cofree f ~> Cofree g
 hoistCofree nat (Cofree c) = Cofree (map (nat <<< map (hoistCofree nat)) <$> c)
@@ -224,3 +243,7 @@ instance shiftMapCofree :: Monoid v => ShiftMap (Widget v) (Cofree (Widget v)) w
   shiftMap f (Cofree l) = deferCofree \_ ->
     let Tuple a rest = force l
     in Tuple a (f pure rest)
+
+mfix :: forall f a. (Lazy a -> Cofree f a) -> Cofree f a
+mfix f = Z.fix \res -> f $ lazyHead res
+
