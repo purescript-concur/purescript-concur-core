@@ -1,11 +1,12 @@
 -- | AJ: This is the same as `Control.Comonad.Cofree` from the `purescript-free` package.
 -- | However, we need to override the applicative and monad instance, and "probably" due to a Purescript bug it's not working.
 -- | The _cofree comonad_ for a `Functor`.
--- | This version also adds `lazyHead`, `lazyTail`, and `mfix`
+-- | This version also adds `lazyCofree`, `lazyHead`, `lazyTail`, and `mfix`
 module Control.Cofree
   ( Cofree
   , (:<)
   , buildCofree
+  , lazyCofree
   , deferCofree
   , explore
   , exploreM
@@ -46,6 +47,14 @@ import Data.Tuple (Tuple(..), fst, snd)
 -- | labels from the local context.
 newtype Cofree f a
   = Cofree (Lazy (Tuple a (f (Cofree f a))))
+
+-- | Lazily creates a value of type `Cofree f a` from a label and a
+-- | functor-full of "subtrees".
+lazyCofree ::
+  forall f a.
+  Lazy (Tuple a (f (Cofree f a))) ->
+  Cofree f a
+lazyCofree = Cofree
 
 -- | Lazily creates a value of type `Cofree f a` from a label and a
 -- | functor-full of "subtrees".
@@ -234,7 +243,7 @@ instance bindCofree :: (Alternative f) => Bind (Cofree f) where
 --       in mkCofree (head fh) ((tail fh) <|> (loop <$> tail fa'))
 instance monadCofree :: (Alternative f) => Monad (Cofree f)
 
-instance lazyCofree :: Z.Lazy (Cofree f a) where
+instance isLazyCofree :: Z.Lazy (Cofree f a) where
   defer k = Cofree (defer \_ ->
     let (Cofree t) = k unit
     in force t)
