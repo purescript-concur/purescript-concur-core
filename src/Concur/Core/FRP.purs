@@ -2,6 +2,7 @@ module Concur.Core.FRP where
 
 import Prelude
 
+import Concur.Core.Types (Widget)
 import Control.Alt (class Alt, (<|>))
 import Control.Alternative (class Alternative, class Plus, empty)
 import Control.Cofree (Cofree, mkCofree, tail)
@@ -22,38 +23,39 @@ import Effect.Class (class MonadEffect, liftEffect)
 -- | A Widget can be considered to be a one-shot Event. (There is no stream of events in Concur).
 -- | Signals then are never-ending widget loops that allow access to their last return value.
 -- | This last produced value allows composition with other widgets even for never-ending widgets.
-type Signal m a = Cofree m a
+type SignalT m a = Cofree m a
+
+-- | A Signal specific to Widgets
+type Signal v a = SignalT (Widget v) a
 
 -- | Construct a signal from an initial value, and a step widget
 step ::
   forall m a.
   a ->
-  m (Signal m a) ->
-  Signal m a
+  m (SignalT m a) ->
+  SignalT m a
 step = mkCofree
 
-
-
 -- | Display a widget which returns a continuation
-display :: forall m. m (Signal m Unit) -> Signal m Unit
+display :: forall m. m (SignalT m Unit) -> SignalT m Unit
 display w = step unit w
 
 -- | Fires a widget once then stop. This will reflow when a parent signal reflows
 -- | Starts as Nothing. Then switches to `Just returnVal` after the Widget is done
-fireOnce :: forall m a. Monad m => Plus m => m a -> Signal m (Maybe a)
+fireOnce :: forall m a. Monad m => Plus m => m a -> SignalT m (Maybe a)
 fireOnce w = step Nothing do
   a <- w
   pure (step (Just a) empty)
 
 -- | Similar to `fireOnce`, but discards the return value
-fireOnce_ :: forall m. Monad m => Plus m => m Unit -> Signal m Unit
+fireOnce_ :: forall m. Monad m => Plus m => m Unit -> SignalT m Unit
 fireOnce_ w = display do w *> empty
 
 -- | Wait until we get a `Just` value from a signal
 justWait :: forall m a b.
             Monad m =>
             Alternative m =>
-            b -> Signal m (Maybe a) -> (a -> Signal m b) -> Signal m b
+            b -> SignalT m (Maybe a) -> (a -> SignalT m b) -> SignalT m b
 justWait b s f = do
   m <- s
   case m of
@@ -61,7 +63,7 @@ justWait b s f = do
     Just a -> f a
 
 -- | Run an effectful computation, and do something with the result
-justEffect :: forall m a b. MonadEffect m => Monad m => Alternative m => b -> Effect a -> (a -> Signal m b) -> Signal m b
+justEffect :: forall m a b. MonadEffect m => Monad m => Alternative m => b -> Effect a -> (a -> SignalT m b) -> SignalT m b
 justEffect b e f = justWait b (fireOnce do liftEffect e) f
 
 -- | A constant signal
@@ -70,22 +72,22 @@ always ::
   Monad m =>
   Alternative m =>
   a ->
-  Signal m a
+  SignalT m a
 always = pure
 
 -- | Update signal to a new value
 update ::
   forall m a.
-  Signal m a ->
-  m (Signal m a)
+  SignalT m a ->
+  m (SignalT m a)
 update = tail
 
 -- | Construct a signal by polling a signal with a nested widget for values
 poll ::
   forall m a.
   Monad m =>
-  Signal m (m a) ->
-  m (Signal m a)
+  SignalT m (m a) ->
+  m (SignalT m a)
 poll b = step <$> extract b <*> (map poll (update b))
 
 -- | Create a signal which repeatedly invokes a widget for values.
@@ -95,7 +97,7 @@ hold ::
   Monad m =>
   a ->
   m a ->
-  Signal m a
+  SignalT m a
 hold a w = step a do
   a' <- w
   pure (hold a' w)
@@ -106,7 +108,7 @@ loopW ::
   Monad m =>
   a ->
   (a -> m a) ->
-  Signal m a
+  SignalT m a
 loopW a f = step a (go <$> f a)
   where
   go x = loopW x f
@@ -116,8 +118,8 @@ loopS ::
   forall m a.
   Monad m =>
   a ->
-  (a -> Signal m a) ->
-  Signal m a
+  (a -> SignalT m a) ->
+  SignalT m a
 loopS a f = step (extract this) do
   s <- update this
   pure (loopS (extract s) f)
@@ -125,7 +127,7 @@ loopS a f = step (extract this) do
   this = f a
 
 -- | Loop a signal so that the return value is passed to the beginning again.
--- loop :: forall m a. Monoid v => (a -> Signal m (Maybe a)) -> Signal m a
+-- loop :: forall m a. Monoid v => (a -> SignalT m (Maybe a)) -> SignalT m a
 -- loop f = step (extract this) do
 --   s <- update this
 --   pure (loopS (extract s) f)
@@ -138,18 +140,18 @@ foldp ::
   Functor m =>
   (a -> b -> a) ->
   a ->
-  Signal m b ->
-  Signal m a
+  SignalT m b ->
+  SignalT m a
 foldp f a sb = step a' (map (foldp f a') (update sb))
   where
   a' = f a (extract sb)
 
 -- | Consume a closed signal to make a widget
--- dyn :: forall v. (forall x. Signal m x) ~> (forall x. m x)
+-- dyn :: forall v. (forall x. SignalT m x) ~> (forall x. m x)
 dyn ::
   forall m a b.
   Monad m =>
-  Signal m a ->
+  SignalT m a ->
   m b
 dyn s = update s >>= dyn
 
@@ -157,7 +159,7 @@ dyn s = update s >>= dyn
 oneShot ::
   forall m a.
   Monad m =>
-  Signal m (Maybe a) ->
+  SignalT m (Maybe a) ->
   m a
 oneShot s = case extract s of
   Nothing -> update s >>= oneShot
@@ -167,11 +169,11 @@ oneShot s = case extract s of
 demand ::
   forall m a.
   Monad m =>
-  Signal m (Maybe a) ->
+  SignalT m (Maybe a) ->
   m a
 demand = oneShot
 
-demand' :: forall m a. Monad m => (Maybe a -> Signal m (Maybe a)) -> m a
+demand' :: forall m a. Monad m => (Maybe a -> SignalT m (Maybe a)) -> m a
 demand' f = oneShot (f Nothing)
 
 -- A Common pattern is demand + stateLoopS
@@ -180,7 +182,7 @@ demandLoop ::
   Monad m =>
   Alternative m =>
   s ->
-  (s -> Signal m (Either s a)) ->
+  (s -> SignalT m (Either s a)) ->
   m a
 demandLoop def w = demand (stateLoopS def w)
 
@@ -191,15 +193,15 @@ stateLoopS ::
   Monad m =>
   Alternative m =>
   s ->
-  (s -> Signal m (Either s a)) ->
-  Signal m (Maybe a)
+  (s -> SignalT m (Either s a)) ->
+  SignalT m (Maybe a)
 stateLoopS def w = map hush $ loopS (Left def) $ either w (pure <<< Right)
 
 
 -- Debounced output from a widget
 -- wrapped into a signal
 debounce :: forall m a. Monad m => Alt m => MonadAff m =>
-            Number -> a -> (a -> m a) -> Signal m a
+            Number -> a -> (a -> m a) -> SignalT m a
 debounce timeoutMs ainit winit = go ainit winit
   where
     go a w = step a do
