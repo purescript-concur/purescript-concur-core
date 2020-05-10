@@ -29,24 +29,23 @@ import Effect.Exception (Error)
 type WidgetStepRecord v a
   = {view :: v, cont :: Aff a}
 
-newtype WidgetStep v a
-  = WidgetStep (Either (Effect a) (WidgetStepRecord v a))
+data WidgetStep v a
+  = WidgetStepEff (Effect a)
+  | WidgetStepView (WidgetStepRecord v a)
 
-unWidgetStep ::
-  forall v a.
-  WidgetStep v a ->
-  Either (Effect a) (WidgetStepRecord v a)
-unWidgetStep (WidgetStep x) = x
+-- unWidgetStep ::
+--   forall v a.
+--   WidgetStep v a ->
+--   Either (Effect a) (WidgetStepRecord v a)
+-- unWidgetStep (WidgetStep x) = x
 
 -- derive instance widgetStepFunctor :: Functor (WidgetStep v)
 instance functorWidgetStep :: Functor (WidgetStep v) where
-  map f (WidgetStep w) = WidgetStep (mod w)
-    where
-    mod (Right ws) = Right (ws { cont = map f ws.cont })
-    mod (Left effa) = Left (map f effa)
+  map f (WidgetStepEff e) = WidgetStepEff (map f e)
+  map f (WidgetStepView w) = WidgetStepView (w { cont = map f w.cont })
 
 displayStep :: forall a v. v -> WidgetStep v a
-displayStep v = WidgetStep (Right { view: v, cont: never })
+displayStep v = WidgetStepView { view: v, cont: never }
 
 newtype Widget v a
   = Widget (Free (WidgetStep v) a)
@@ -98,11 +97,10 @@ instance widgetMultiAlternative ::
       let x = NEA.uncons wfs
       in case resume x.head of
         Left a -> pure a
-        Right (WidgetStep x1) -> case x1 of
-          Left eff -> wrap $ WidgetStep $ Left do
+        Right (WidgetStepEff eff) -> wrap $ WidgetStepEff do
             w <- eff
             pure $ combine $ NEA.cons' w x.tail
-          Right wsr -> combineInner (NEA.singleton wsr) x.tail
+        Right (WidgetStepView wsr) -> combineInner (NEA.singleton wsr) x.tail
 
     combineInner ::
       forall v' a.
@@ -120,7 +118,7 @@ instance widgetMultiAlternative ::
       Monoid v' =>
       NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
       Free (WidgetStep v') a
-    combineViewsConts ws = wrap $ WidgetStep $ Right
+    combineViewsConts ws = wrap $ WidgetStepView
       { view: foldMap1 _.view ws
       , cont: merge ws (map _.cont ws)
       }
@@ -135,11 +133,10 @@ instance widgetMultiAlternative ::
       let x = NEA.uncons freeNarr
       in case resume x.head of
         Left a -> pure a
-        Right (WidgetStep x1) -> case x1 of
-          Left eff -> wrap $ WidgetStep $ Left do
+        Right (WidgetStepEff eff) -> wrap $ WidgetStepEff do
             w <- eff
             pure $ combineInner1 ws $ NEA.cons' w x.tail
-          Right wsr -> combineInner (NEA.snoc ws wsr) x.tail
+        Right (WidgetStepView wsr) -> combineInner (NEA.snoc ws wsr) x.tail
 
     merge ::
       forall v' a.
@@ -148,7 +145,7 @@ instance widgetMultiAlternative ::
       NonEmptyArray (Aff (Free (WidgetStep v') a)) ->
       Aff (Free (WidgetStep v') a)
     merge ws wscs = do
-      let wsm = map (wrap <<< WidgetStep <<< Right) ws
+      let wsm = map (wrap <<< WidgetStepView) ws
       -- TODO: We know the array is non-empty. We need something like foldl1WithIndex.
       Tuple i e <- sequential (foldlWithIndex (\i r w ->
         alt (parallel (map (Tuple i) w)) r) empty wscs)
@@ -204,9 +201,8 @@ mapView :: forall a v1 v2. (v1 -> v2) -> Widget v1 a -> Widget v2 a
 mapView f (Widget w) = Widget (hoistFree (mapViewStep f) w)
 
 mapViewStep :: forall v1 v2 a. (v1 -> v2) -> WidgetStep v1 a -> WidgetStep v2 a
-mapViewStep f (WidgetStep ws) = WidgetStep (map mod ws)
-  where
-  mod ws' = ws' { view = f ws'.view }
+mapViewStep f (WidgetStepEff e) = WidgetStepEff e
+mapViewStep f (WidgetStepView ws) = WidgetStepView ( ws { view = f ws.view })
 
 display :: forall a v. v -> Widget v a
 display v = Widget (liftF (displayStep v))
@@ -216,7 +212,7 @@ effAction ::
   forall a v.
   Effect a ->
   Widget v a
-effAction = Widget <<< liftF <<< WidgetStep <<< Left
+effAction = Widget <<< liftF <<< WidgetStepEff
 
 -- Async aff
 affAction ::
@@ -224,14 +220,14 @@ affAction ::
   v ->
   Aff a ->
   Widget v a
-affAction v aff = Widget $ wrap $ WidgetStep $ Left do
+affAction v aff = Widget $ wrap $ WidgetStepEff do
   var <- EVar.empty
   runAff_ (handler var) aff
   -- Detect synchronous resolution
   ma <- EVar.tryTake var
   pure case ma of
     Just a -> pure a
-    Nothing -> liftF $ WidgetStep $ Right { view: v, cont: AVar.take var }
+    Nothing -> liftF $ WidgetStepView { view: v, cont: AVar.take var }
   where
   -- TODO: allow client code to handle aff failures
   handler _ (Left e) = log ("Aff failed - " <> show e)

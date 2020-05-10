@@ -23,11 +23,10 @@ discharge ::
   Effect v
 discharge handler (Widget w) = case resume w of
   Right _ -> pure mempty
-  Left (WidgetStep ews) -> case ews of
-    Left eff -> do
+  Left (WidgetStepEff eff) -> do
       w' <- eff
       discharge handler (Widget w')
-    Right ws -> do
+  Left (WidgetStepView ws) -> do
       runAff_ (handler <<< map Widget) ws.cont
       pure ws.view
 
@@ -40,11 +39,10 @@ dischargePartialEffect ::
   Effect (Tuple (Widget v a) v)
 dischargePartialEffect w = case resume (unWidget w) of
   Right _ -> pure (Tuple w mempty)
-  Left (WidgetStep x1) -> case x1 of
-    Left eff -> do
+  Left (WidgetStepEff eff) -> do
       w' <- eff
       dischargePartialEffect (Widget w')
-    Right ws -> pure (Tuple (Widget (wrap (WidgetStep (Right ws)))) ws.view)
+  Left (WidgetStepView ws) -> pure (Tuple (Widget (wrap (WidgetStepView ws))) ws.view)
 
 {-
 -- | Discharge a widget, forces async resolution of the continuation.
