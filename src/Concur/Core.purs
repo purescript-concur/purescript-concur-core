@@ -8,8 +8,8 @@ where
 
 import Concur.Core.IsWidget (class IsWidget)
 import Concur.Core.LiftWidget (class LiftWidget, liftWidget)
-import Concur.Core.Types (Widget(..), WidgetStep(..), resume, unWidget)
-import Control.Monad.Free (Free, wrap)
+import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
+import Control.Monad.Free (Free, wrap, resume)
 import Control.Parallel.Class (parallel, sequential)
 import Control.Plus (alt)
 import Data.Either (Either(..))
@@ -32,11 +32,11 @@ mkNodeWidget mkView (Widget w) = Widget (mkNodeWidget' mkView w)
 -- Private
 mkNodeWidget' :: forall a v. ((a -> Effect Unit) -> v -> v) -> Free (WidgetStep v) a -> Free (WidgetStep v) a
 mkNodeWidget' mkView w = case resume w of
-  Left a -> pure a
-  Right (WidgetStepEff eff) -> wrap $ WidgetStepEff do
+  Right a -> pure a
+  Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
       w' <- eff
       pure $ mkNodeWidget' mkView w'
-  Right (WidgetStepView wsr) -> wrap $ WidgetStepEff do
+  Left (WidgetStepView wsr) -> wrap $ WidgetStepEff do
       var <- EVar.empty
       let eventHandler = (\a -> void (EVar.tryPut (pure a) var))
       let cont' = sequential (alt (parallel (liftAff (AVar.take var)))

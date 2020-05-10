@@ -3,7 +3,7 @@ module Concur.Core.Types where
 import Prelude
 
 import Control.Alternative (class Alternative)
-import Control.Monad.Free (Free, hoistFree, liftF, resume', wrap)
+import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
 import Control.Monad.Rec.Class (class MonadRec)
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Parallel.Class (parallel, sequential)
@@ -76,10 +76,6 @@ flipEither ::
 flipEither (Left a) = Right a
 flipEither (Right b) = Left b
 
-resume :: forall f a. Functor f => Free f a -> Either a (f (Free f a))
-resume = resume' (\g i ->
-  Right (i <$> g)) Left
-
 instance widgetMultiAlternative ::
   ( Monoid v
   ) =>
@@ -96,11 +92,11 @@ instance widgetMultiAlternative ::
     combine wfs =
       let x = NEA.uncons wfs
       in case resume x.head of
-        Left a -> pure a
-        Right (WidgetStepEff eff) -> wrap $ WidgetStepEff do
+        Right a -> pure a
+        Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
             w <- eff
             pure $ combine $ NEA.cons' w x.tail
-        Right (WidgetStepView wsr) -> combineInner (NEA.singleton wsr) x.tail
+        Left (WidgetStepView wsr) -> combineInner (NEA.singleton wsr) x.tail
 
     combineInner ::
       forall v' a.
@@ -132,11 +128,11 @@ instance widgetMultiAlternative ::
     combineInner1 ws freeNarr =
       let x = NEA.uncons freeNarr
       in case resume x.head of
-        Left a -> pure a
-        Right (WidgetStepEff eff) -> wrap $ WidgetStepEff do
+        Right a -> pure a
+        Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
             w <- eff
             pure $ combineInner1 ws $ NEA.cons' w x.tail
-        Right (WidgetStepView wsr) -> combineInner (NEA.snoc ws wsr) x.tail
+        Left (WidgetStepView wsr) -> combineInner (NEA.snoc ws wsr) x.tail
 
     merge ::
       forall v' a.
