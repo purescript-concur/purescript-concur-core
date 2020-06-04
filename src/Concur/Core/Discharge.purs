@@ -2,12 +2,11 @@ module Concur.Core.Discharge where
 
 import Prelude
 
-import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
+import Concur.Core.Types (Widget(..), WidgetStep(..), observe, unWidget)
 import Control.Monad.Free (resume, wrap)
 import Data.Either (Either(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (runAff_)
 import Effect.Exception (Error)
 
 -- Widget discharge strategies
@@ -27,7 +26,7 @@ discharge handler (Widget w) = case resume w of
       w' <- eff
       discharge handler (Widget w')
   Left (WidgetStepView ws) -> do
-      runAff_ (handler <<< map Widget) ws.cont
+      _ <- observe ws.cont (\x -> handler $ Right $ Widget x)
       pure ws.view
 
 -- | Discharge only the top level blocking effect of a widget (if any) to get access to the view

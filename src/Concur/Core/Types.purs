@@ -6,28 +6,52 @@ import Control.Alternative (class Alternative)
 import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
 import Control.Monad.Rec.Class (class MonadRec)
 import Control.MultiAlternative (class MultiAlternative, orr)
-import Control.Parallel.Class (parallel, sequential)
 import Control.Plus (class Alt, class Plus, alt, empty)
 import Control.ShiftMap (class ShiftMap)
 import Data.Array as A
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
-import Data.FoldableWithIndex (foldlWithIndex, foldrWithIndex)
+import Data.Foldable (sequence_)
+import Data.FoldableWithIndex (foldrWithIndex)
 import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
 import Data.Semigroup.Foldable (foldMap1)
+import Data.TraversableWithIndex (traverseWithIndex)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.AVar (empty, tryPut, tryTake) as EVar
-import Effect.Aff (Aff, effectCanceler, makeAff, never, runAff_)
-import Effect.Aff.AVar (take) as AVar
-import Effect.Aff.Class (class MonadAff)
 import Effect.Class (class MonadEffect)
-import Effect.Console (log)
-import Effect.Exception (Error)
+
+-- Returns a canceller
+newtype Observe a = Observe ((a -> Effect Unit) -> Effect (Effect Unit))
+-- derive instance observeFunctor :: Functor Observe
+instance observeFunctor :: Functor Observe where
+  map f (Observe g) = Observe \cb -> g (cb <<< f)
+
+observe :: forall a. Observe a -> (a -> Effect Unit) -> Effect (Effect Unit)
+observe (Observe f) = f
+
+never :: forall a. Observe a
+never = Observe \_ -> pure (pure unit)
+
+dont :: forall a. Pusher a
+dont a = pure unit
+
+type Pusher a = a -> Effect Unit
+
+par :: forall a. NonEmptyArray (Observe a) -> Observe (Tuple Int a)
+par os = Observe $ \cb -> do
+  cs <- traverseWithIndex (\i (Observe f) -> f (\a -> cb (Tuple i a))) os
+  pure $ sequence_ cs
+
+-- TODO TODO TODO
+mkObserve :: forall a. Effect { push :: Pusher a, subscribe :: Observe a }
+mkObserve = pure
+  { push: dont
+  , subscribe: never
+  }
 
 type WidgetStepRecord v a
-  = {view :: v, cont :: Aff a}
+  = {view :: v, cont :: Observe a}
 
 data WidgetStep v a
   = WidgetStepEff (Effect a)
@@ -138,16 +162,14 @@ instance widgetMultiAlternative ::
       forall v' a.
       Monoid v' =>
       NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      NonEmptyArray (Aff (Free (WidgetStep v') a)) ->
-      Aff (Free (WidgetStep v') a)
-    merge ws wscs = do
+      NonEmptyArray (Observe (Free (WidgetStep v') a)) ->
+      Observe (Free (WidgetStep v') a)
+    merge ws wscs =
       let wsm = map (wrap <<< WidgetStepView) ws
       -- TODO: We know the array is non-empty. We need something like foldl1WithIndex.
-      Tuple i e <- sequential (foldlWithIndex (\i r w ->
-        alt (parallel (map (Tuple i) w)) r) empty wscs)
-      -- TODO: All the Aff in ws is already discharged. Use a more efficient way than combine to process it
+      -- TODO: All the Observe in ws is already discharged. Use a more efficient way than combine to process it
       -- TODO: Also, more importantly, we would like to not have to cancel running fibers unless one of them returns a result
-      pure $ combine (fromMaybe wsm (NEA.updateAt i e wsm))
+      in (\(Tuple i e) -> combine (fromMaybe wsm (NEA.updateAt i e wsm))) <$> (par wscs)
 
 
 -- | Run multiple widgets in parallel until *all* finish, and collect their outputs
@@ -214,32 +236,21 @@ effAction = Widget <<< liftF <<< WidgetStepEff
 affAction ::
   forall a v.
   v ->
-  Aff a ->
+  Observe a ->
   Widget v a
-affAction v aff = Widget $ wrap $ WidgetStepEff do
-  var <- EVar.empty
-  runAff_ (handler var) aff
-  -- Detect synchronous resolution
-  ma <- EVar.tryTake var
-  pure case ma of
-    Just a -> pure a
-    Nothing -> liftF $ WidgetStepView { view: v, cont: AVar.take var }
-  where
-  -- TODO: allow client code to handle aff failures
-  handler _ (Left e) = log ("Aff failed - " <> show e)
-  handler var (Right a) = void (EVar.tryPut a var)
+affAction v cb = Widget $ liftF $ WidgetStepView { view: v, cont: cb }
 
 -- Async callback
-asyncAction ::
-  forall v a.
-  v ->
-  ((Either Error a -> Effect Unit) -> Effect (Effect Unit)) ->
-  Widget v a
-asyncAction v handler = affAction v (makeAff (map effectCanceler <<< handler))
+-- asyncAction ::
+--   forall v a.
+--   v ->
+--   ((Either Error a -> Effect Unit) -> Effect (Effect Unit)) ->
+--   Widget v a
+-- asyncAction v handler = affAction v (?asd handler)
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
   liftEffect = effAction
 
-instance widgetMonadAff :: (Monoid v) => MonadAff (Widget v) where
-  liftAff = affAction mempty
+-- instance widgetMonadObserve :: (Monoid v) => MonadObserve (Widget v) where
+--   liftObserve = affAction mempty
     -- Widget $ liftF $ WidgetStep $ Right { view: mempty, cont: aff }
