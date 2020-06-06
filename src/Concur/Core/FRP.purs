@@ -3,16 +3,12 @@ module Concur.Core.FRP where
 import Prelude
 
 import Concur.Core.Types (Widget)
-import Control.Alt (class Alt, (<|>))
 import Control.Alternative (class Alternative, class Plus, empty)
 import Control.Cofree (Cofree, mkCofree, tail)
 import Control.Comonad (extract)
 import Data.Either (Either(..), either, hush)
 import Data.Maybe (Maybe(..))
-import Data.Time.Duration (Milliseconds(..))
 import Effect (Effect)
-import Effect.Aff (delay)
-import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (class MonadEffect, liftEffect)
 
 ----------
@@ -196,23 +192,3 @@ stateLoopS ::
   (s -> SignalT m (Either s a)) ->
   SignalT m (Maybe a)
 stateLoopS def w = map hush $ loopS (Left def) $ either w (pure <<< Right)
-
-
--- Debounced output from a widget
--- wrapped into a signal
-debounce :: forall m a. Monad m => Alt m => MonadAff m =>
-            Number -> a -> (a -> m a) -> SignalT m a
-debounce timeoutMs ainit winit = go ainit winit
-  where
-    go a w = step a do
-      -- Wait until we have a user input
-      -- before starting the timer
-      a' <- w a
-      go' a' w
-    go' a w = do
-      res <- (Just <$> w a) <|> (Nothing <$ liftAff (delay (Milliseconds timeoutMs)))
-      case res of
-        -- Timeout fired
-        Nothing -> pure (go a w)
-        -- Events fired, but we are still in timeout
-        Just a' -> go' a' w

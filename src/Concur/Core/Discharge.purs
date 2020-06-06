@@ -2,7 +2,8 @@ module Concur.Core.Discharge where
 
 import Prelude
 
-import Concur.Core.Types (Widget(..), WidgetStep(..), observe, unWidget)
+import Concur.Core.Event (observe)
+import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
 import Control.Monad.Free (resume, wrap)
 import Data.Either (Either(..))
 import Data.Tuple (Tuple(..))
