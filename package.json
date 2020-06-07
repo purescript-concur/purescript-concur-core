@@ -10,7 +10,8 @@
   },
   "files": [],
   "scripts": {
-    "build": "spago build"
+    "build": "spago build",
+    "test": "spago -x test.dhall test"
   },
   "devDependencies": {
     "parcel-bundler": "^1.12.4",
