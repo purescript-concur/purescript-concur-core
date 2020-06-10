@@ -3,11 +3,15 @@ module Concur.Core.Discharge where
 import Prelude
 
 import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
-import Control.Monad.Free (resume, wrap)
+import Control.Monad.Free (resume, runFreeM, wrap)
+import Control.Monad.Writer (runWriterT, tell)
+import Data.Array (singleton)
 import Data.Either (Either(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (runAff_)
+import Effect.Aff (Aff, runAff_)
+import Effect.Aff.Class (liftAff)
+import Effect.Class (liftEffect)
 import Effect.Exception (Error)
 
 -- Widget discharge strategies
@@ -44,6 +48,19 @@ dischargePartialEffect w = case resume (unWidget w) of
       dischargePartialEffect (Widget w')
   Left (WidgetStepView ws) -> pure (Tuple (Widget (wrap (WidgetStepView ws))) ws.view)
 
+-- | Dischage all effects and recieve the result and viewss as Array.
+-- | Mainly for testing.
+-- | Be carefull that never ending Widget will convert to never ending Aff.
+dischargeAll :: forall v a. Widget v a -> Aff { result :: a, views :: Array v }
+dischargeAll widget = do
+  Tuple result views <- runWriterT $ runFreeM interpret (unWidget widget)
+  pure { result, views }
+  where
+    interpret (WidgetStepEff eff) =
+      liftEffect eff
+    interpret (WidgetStepView rec) = do
+      tell $ singleton rec.view
+      liftAff rec.cont
 {-
 -- | Discharge a widget, forces async resolution of the continuation.
 -- | 1. Runs the Effect action

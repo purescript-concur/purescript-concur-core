@@ -2,6 +2,7 @@ module Test.WidgetSpec where
 
 import Prelude
 
+import Concur.Core.Discharge (dischargeAll)
 import Concur.Core.Types (affAction)
 import Control.MultiAlternative (orr)
 import Data.Time.Duration (Milliseconds(..))
@@ -10,7 +11,6 @@ import Effect.Class (liftEffect)
 import Effect.Ref as Ref
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual, shouldReturn)
-import Test.Utils (runWidgetAsAff)
 
 widgetSpec :: Spec Unit
 widgetSpec =
@@ -18,7 +18,7 @@ widgetSpec =
     describe "orr" do
       it "should cancel running effects when the widget returns a value" do
         ref <- liftEffect $ Ref.new ""
-        { views } <- runWidgetAsAff $ orr
+        { views } <- dischargeAll $ orr
           [ affAction "a" do
                delay (Milliseconds 100.0)
                liftEffect $ Ref.write "a" ref
@@ -33,7 +33,7 @@ widgetSpec =
 
       it "should start all the widgets only once" do
         ref <- liftEffect (Ref.new 0)
-        { result, views } <- runWidgetAsAff $ orr
+        { result, views } <- dischargeAll $ orr
           [ do
                affAction "a0" $ delay (Milliseconds 100.0)
                affAction "a1" $ delay (Milliseconds 100.0)
