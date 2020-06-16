@@ -2,10 +2,11 @@ module Concur.Core.Discharge where
 
 import Prelude
 
-import Concur.Core.Event (observe)
+import Concur.Core.Event (Observer(..))
 import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
-import Control.Monad.Free (resume, wrap)
+import Control.Monad.Free (resume)
 import Data.Either (Either(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Exception (Error)
@@ -20,29 +21,43 @@ discharge ::
   Monoid v =>
   (Either Error (Widget v a) -> Effect Unit) ->
   Widget v a ->
-  Effect v
+  Effect (Maybe v)
 discharge handler (Widget w) = case resume w of
-  Right _ -> pure mempty
-  Left (WidgetStepEff eff) -> do
+  Right _ -> pure Nothing
+  Left x -> case x of
+    WidgetStepEff eff -> do
       w' <- eff
       discharge handler (Widget w')
-  Left (WidgetStepView ws) -> do
-      _ <- observe ws.cont (\x -> handler $ Right $ Widget x)
-      pure ws.view
+    WidgetStepCont (Observer o) -> do
+      _ <- o \y -> handler (Right (Widget y))
+      pure Nothing
+    WidgetStepHalt -> pure Nothing
+    WidgetStepView v w' ->
+      -- Successive views overwrite previous views
+      (Just <<< fromMaybe v) <$> discharge handler (Widget w')
+    WidgetStepMapView f w' ->
+      map f <$> discharge handler (Widget w')
 
 -- | Discharge only the top level blocking effect of a widget (if any) to get access to the view
--- | Returns the view, and the remaining widget
+-- | Returns the view if any, and the remaining widget, which could be the same widget.
 dischargePartialEffect ::
   forall a v.
   Monoid v =>
   Widget v a ->
-  Effect (Tuple (Widget v a) v)
+  Effect (Tuple (Widget v a) (Maybe v))
 dischargePartialEffect w = case resume (unWidget w) of
-  Right _ -> pure (Tuple w mempty)
-  Left (WidgetStepEff eff) -> do
+  Right _ -> pure (Tuple w Nothing)
+  Left x -> case x of
+    WidgetStepEff eff -> do
       w' <- eff
       dischargePartialEffect (Widget w')
-  Left (WidgetStepView ws) -> pure (Tuple (Widget (wrap (WidgetStepView ws))) ws.view)
+    WidgetStepCont _ -> pure (Tuple w Nothing)
+    WidgetStepHalt -> pure (Tuple w Nothing)
+    WidgetStepView v w' ->
+      -- Successive views overwrite previous views
+      map (Just <<< fromMaybe v) <$> dischargePartialEffect (Widget w')
+    WidgetStepMapView f w' ->
+      map (map f) <$> dischargePartialEffect (Widget w')
 
 {-
 -- | Discharge a widget, forces async resolution of the continuation.

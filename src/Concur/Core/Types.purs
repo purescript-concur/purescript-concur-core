@@ -2,7 +2,7 @@ module Concur.Core.Types where
 
 import Prelude
 
-import Concur.Core.Event (Observer(..), never, parIndex)
+import Concur.Core.Event (Observer(..), parIndex)
 import Control.Alternative (class Alternative)
 import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
 import Control.Monad.Rec.Class (class MonadRec)
@@ -15,25 +15,30 @@ import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
 import Data.FoldableWithIndex (foldrWithIndex)
 import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
-import Data.Semigroup.Foldable (foldMap1)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (class MonadEffect)
 
-type WidgetStepRecord v a
-  = {view :: v, cont :: Observer a}
-
 data WidgetStep v a
   = WidgetStepEff (Effect a)
-  | WidgetStepView (WidgetStepRecord v a)
+  | WidgetStepCont (Observer a)
+  -- The expectation is that these views will never be sequenced in a row
+  -- However, if they are sequenced in a row, only the last view will take effect
+  -- TODO: Perhaps the views should be concatenated??
+  | WidgetStepView v a
+  -- This modifies all views inside it
+  | WidgetStepMapView (v -> v) a
+  -- TODO: This modifies all views inside it, but can also add handlers
+  -- TODO: | WidgetStepNestedView ((b -> Effect Unit) -> v -> v) a
+  | WidgetStepHalt
 
 -- derive instance widgetStepFunctor :: Functor (WidgetStep v)
 instance functorWidgetStep :: Functor (WidgetStep v) where
   map f (WidgetStepEff e) = WidgetStepEff (map f e)
-  map f (WidgetStepView w) = WidgetStepView (w { cont = map f w.cont })
-
-displayStep :: forall a v. v -> WidgetStep v a
-displayStep v = WidgetStepView { view: v, cont: never }
+  map f (WidgetStepView v a) = WidgetStepView v (f a)
+  map f (WidgetStepMapView g a) = WidgetStepMapView g (f a)
+  map f (WidgetStepCont o) = WidgetStepCont (map f o)
+  map _ WidgetStepHalt = WidgetStepHalt
 
 newtype Widget v a
   = Widget (Free (WidgetStep v) a)
@@ -56,84 +61,88 @@ derive newtype instance widgetMonadRec :: MonadRec (Widget v)
 instance widgetShiftMap :: ShiftMap (Widget v) (Widget v) where
   shiftMap f = f identity
 
--- Util
-flipEither ::
-  forall a b.
-  Either a b ->
-  Either b a
-flipEither (Left a) = Right a
-flipEither (Right b) = Left b
-
 instance widgetMultiAlternative ::
   ( Monoid v
   ) =>
   MultiAlternative (Widget v) where
   orr wss = case NEA.fromArray wss of
-    Just wsne -> Widget $ combine $ map unWidget wsne
+    Just wsne -> Widget $ combine wsne
     Nothing -> empty
     where
+
     combine ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Free (WidgetStep v') a) ->
+      NonEmptyArray (Widget v' a) ->
       Free (WidgetStep v') a
     combine wfs =
       let x = NEA.uncons wfs
-      in case resume x.head of
+      in case resume (unWidget x.head) of
         Right a -> pure a
-        Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
+        -- TODO: This wrap probably cannot be wished away
+        Left xx -> case xx of
+          WidgetStepEff eff -> wrap $ WidgetStepEff do
             w <- eff
-            pure $ combine $ NEA.cons' w x.tail
-        Left (WidgetStepView wsr) -> combineInner (NEA.singleton wsr) x.tail
+            pure $ combine $ NEA.cons' (Widget w) x.tail
+
+          -- TODO: Instead of using wrap here, maybe collapse views
+          --       This may be important for performance
+          WidgetStepView v w -> wrap $ WidgetStepView v $ combine $ NEA.cons' (Widget w) x.tail
+          WidgetStepMapView f w -> wrap $ WidgetStepMapView f $ combine $ NEA.cons' (Widget w) x.tail
+          WidgetStepCont o -> combineInner (NEA.singleton o) x.tail
+          WidgetStepHalt -> unWidget (orr x.tail)
 
     combineInner ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      Array (Free (WidgetStep v') a) ->
+      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      Array (Widget v' a) ->
       Free (WidgetStep v') a
     combineInner ws freeArr = case NEA.fromArray freeArr of
-      -- We have collected all the inner views/conts
-      Nothing -> combineViewsConts ws --wrap $ WidgetStep $ Right wsr
+      -- We have collected all the inner conts
+      Nothing -> combineConts ws --wrap $ WidgetStep $ Right wsr
       Just freeNarr -> combineInner1 ws freeNarr
-
-    combineViewsConts ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      Free (WidgetStep v') a
-    combineViewsConts ws = wrap $ WidgetStepView
-      { view: foldMap1 _.view ws
-      , cont: merge ws (map _.cont ws)
-      }
 
     combineInner1 ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      NonEmptyArray (Free (WidgetStep v') a) ->
+      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      NonEmptyArray (Widget v' a) ->
       Free (WidgetStep v') a
     combineInner1 ws freeNarr =
       let x = NEA.uncons freeNarr
-      in case resume x.head of
+      in case resume (unWidget x.head) of
         Right a -> pure a
         Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
             w <- eff
-            pure $ combineInner1 ws $ NEA.cons' w x.tail
-        Left (WidgetStepView wsr) -> combineInner (NEA.snoc ws wsr) x.tail
+            pure $ combineInner1 ws $ NEA.cons' (Widget w) x.tail
+        Left (WidgetStepView v w) -> wrap $ WidgetStepView v $ combineInner1 ws (NEA.cons' (Widget w) x.tail)
+        Left (WidgetStepMapView f w) -> wrap $ WidgetStepMapView f $ combineInner1 ws (NEA.cons' (Widget w) x.tail)
+        Left (WidgetStepCont c) -> combineInner (NEA.snoc ws c) x.tail
+        Left WidgetStepHalt -> combineInner ws x.tail
+
+    combineConts ::
+      forall v' a.
+      Monoid v' =>
+      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      Free (WidgetStep v') a
+    combineConts ws = wrap $ WidgetStepCont $ merge ws
 
     merge ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
       NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
       Observer (Free (WidgetStep v') a)
-    merge ws wscs =
-      let wsm = map (wrap <<< WidgetStepView) ws
+    merge ws = map func obs
+      where
+      wsm = map (Widget <<< wrap <<< WidgetStepCont) ws
+
       -- TODO: We know the array is non-empty. We need something like foldl1WithIndex.
       -- TODO: All the Observer in ws is already discharged. Use a more efficient way than combine to process it
       -- TODO: Also, more importantly, we would like to not have to cancel running fibers unless one of them returns a result
-      in (\ {i, val:e} -> combine (fromMaybe wsm (NEA.updateAt i e wsm))) <$> (parIndex (NEA.toArray wscs))
+      -- MAP OVER OBSERVER. SEE IF WE CAN OPTIMISE THIS (COYONEDA).
+      obs = parIndex (NEA.toArray ws)
+      func {i, val:e} = combine (fromMaybe wsm (NEA.updateAt i (Widget e) wsm))
 
 
 -- | Run multiple widgets in parallel until *all* finish, and collect their outputs
@@ -179,15 +188,21 @@ pulse ::
   Widget v Unit
 pulse = effAction (pure unit)
 
-mapView :: forall a v1 v2. (v1 -> v2) -> Widget v1 a -> Widget v2 a
+mapView :: forall a v. (v -> v) -> Widget v a -> Widget v a
 mapView f (Widget w) = Widget (hoistFree (mapViewStep f) w)
 
-mapViewStep :: forall v1 v2 a. (v1 -> v2) -> WidgetStep v1 a -> WidgetStep v2 a
+mapViewStep :: forall v a. (v -> v) -> WidgetStep v a -> WidgetStep v a
 mapViewStep f (WidgetStepEff e) = WidgetStepEff e
-mapViewStep f (WidgetStepView ws) = WidgetStepView ( ws { view = f ws.view })
+mapViewStep f (WidgetStepCont c) = WidgetStepCont c
+mapViewStep f (WidgetStepView v a) = WidgetStepView (f v) a
+mapViewStep f (WidgetStepMapView g a) = WidgetStepMapView (f <<< g) a
+mapViewStep f WidgetStepHalt = WidgetStepHalt
 
-display :: forall a v. v -> Widget v a
-display v = Widget (liftF (displayStep v))
+halt :: forall v a. Widget v a
+halt = Widget $ liftF WidgetStepHalt
+
+display :: forall v a. v -> Widget v a
+display v = Widget $ wrap $ WidgetStepView v $ unWidget halt
 
 -- Sync eff
 effAction ::
@@ -199,18 +214,16 @@ effAction = Widget <<< liftF <<< WidgetStepEff
 -- Async aff
 affAction ::
   forall a v.
-  v ->
   Observer a ->
   Widget v a
-affAction v cb = Widget $ liftF $ WidgetStepView { view: v, cont: cb }
+affAction = Widget <<< liftF <<< WidgetStepCont
 
 -- Async callback
 asyncAction
   :: forall v a
-   . v
-  -> ((a -> Effect Unit) -> Effect (Effect Unit))
+  .  ((a -> Effect Unit) -> Effect (Effect Unit))
   -> Widget v a
-asyncAction v handler = affAction v (Observer handler)
+asyncAction handler = affAction (Observer handler)
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
   liftEffect = effAction
