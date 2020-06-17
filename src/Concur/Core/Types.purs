@@ -198,6 +198,29 @@ mapViewStep f (WidgetStepView v a) = WidgetStepView (f v) a
 mapViewStep f (WidgetStepMapView g a) = WidgetStepMapView (f <<< g) a
 mapViewStep f WidgetStepHalt = WidgetStepHalt
 
+mapViewHandler :: forall v a. ((a -> Effect Unit) -> v -> v) -> Widget v a -> Widget v a
+mapViewHandler h (Widget w) = case resume w of
+  Right _ -> Widget w
+  Left x -> case x of
+    WidgetStepHalt -> Widget w
+    WidgetStepEff eff -> Widget $ wrap $ WidgetStepEff do
+      w' <- eff
+      pure $ unWidget $ mapViewHandler h (Widget w')
+    WidgetStepView v w' -> mapViewHandlerInnerView v w'
+    WidgetStepCont o -> Widget $ wrap $ WidgetStepCont $ map func o
+
+
+  where
+  func w'' = mapViewHandler h (Widget w'')
+
+  mapViewHandlerInnerView v w' = case resume w' of
+    Right _ -> Widget w'
+    Left y -> case y of
+      WidgetStepHalt -> Widget w'
+      WidgetStepEff eff -> Widget $ wrap $ WidgetStepEff do
+        w'' <- eff
+        pure $ mapViewHandlerInnerView v w''
+
 halt :: forall v a. Widget v a
 halt = Widget $ liftF WidgetStepHalt
 
