@@ -3,7 +3,7 @@ module Concur.Core.Types where
 import Prelude
 
 import Control.Alternative (class Alternative)
-import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
+import Control.Monad.Free (Free, hoistFree, liftF, resume, resume', wrap)
 import Control.Monad.Rec.Class (class MonadRec)
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Plus (class Alt, class Plus, alt, empty)
@@ -14,6 +14,7 @@ import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
 import Data.FoldableWithIndex (foldMapWithIndex, foldrWithIndex)
 import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
+import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (class MonadEffect)
@@ -64,57 +65,69 @@ instance widgetMultiAlternative ::
   orr wss = case NEA.fromArray wss of
     Just wsne -> Widget $ combine wsne
     Nothing -> empty
-    where
 
-    combine ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (Widget v' a) ->
-      Free (WidgetStep v') a
-    combine wfs =
-      let x = NEA.uncons wfs
-      in case resume (unWidget x.head) of
-        Right a -> pure a
-        -- TODO: This wrap probably cannot be wished away
-        Left xx -> case xx of
-          WidgetStepEff eff -> wrap $ WidgetStepEff do
-            w <- eff
-            pure $ combine $ NEA.cons' (Widget w) x.tail
+combine ::
+  forall v' a.
+  Monoid v' =>
+  NonEmptyArray (Widget v' a) ->
+  Free (WidgetStep v') a
+combine wfs =
+  let x = NEA.uncons wfs
+  in case resume (unWidget x.head) of
+    Right a -> pure a
+    -- TODO: This wrap probably cannot be wished away
+    Left xx -> case xx of
+      WidgetStepEff eff -> wrap $ WidgetStepEff do
+        w <- eff
+        pure $ combine $ NEA.cons' (Widget w) x.tail
 
-          WidgetStepView o -> combineInner (NEA.singleton o) x.tail
-          WidgetStepStuck -> unWidget (orr x.tail)
+      WidgetStepView o -> combineInner (NEA.singleton o) x.tail
+      WidgetStepStuck -> unWidget (orr x.tail)
 
-    combineInner ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
-      Array (Widget v' a) ->
-      Free (WidgetStep v') a
-    combineInner vs freeArr = case A.uncons freeArr of
-      -- We have collected all the inner conts
-      Nothing -> combineConts vs
-      Just x -> case resume (unWidget x.head) of
-        Right a -> pure a
-        Left xx -> case xx of
-          WidgetStepEff eff -> wrap $ WidgetStepEff do
-            w <- eff
-            pure $ combineInner vs $ A.cons (Widget w) x.tail
-          WidgetStepView c -> combineInner (NEA.snoc vs c) x.tail
-          WidgetStepStuck -> combineInner vs x.tail
+combineInner ::
+  forall v' a.
+  Monoid v' =>
+  NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
+  Array (Widget v' a) ->
+  Free (WidgetStep v') a
+combineInner vs freeArr = case A.uncons freeArr of
+  -- case traverse (map pure <<< myResume) freeArr of
+  --   Left a -> pure a
+  --   Right xx -> do
+  --     ls <- traverse extractView xx
+  -- We have collected all the inner conts
+  Nothing -> combineConts vs
+  Just x -> case resume (unWidget x.head) of
+    Right a -> pure a
+    Left xx -> case xx of
+      WidgetStepEff eff -> wrap $ WidgetStepEff do
+        w <- eff
+        pure $ combineInner vs $ A.cons (Widget w) x.tail
+      WidgetStepView c -> combineInner (NEA.snoc vs c) x.tail
+      WidgetStepStuck -> combineInner vs x.tail
 
-    combineConts ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
-      Free (WidgetStep v') a
-    combineConts ws = wrap $ WidgetStepView $ merge ws
 
-    merge ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
-      WithHandler v' (Free (WidgetStep v') a)
-    merge ws = mapWithHandler (\nea -> combine (map Widget nea)) $ mergeWithHandlers (wrap <<< WidgetStepView) ws
+-- myResume = resume' (\g i -> Right (i <$> g)) Left
+--
+-- extractView (WidgetStepEff eff) = do
+--   w' <- eff
+--   extractView w'
+-- extractView (WidgetStepView c) = pure [c]
+-- extractView WidgetStepStuck = pure []
+
+combineConts ::
+  forall v' a.
+  Monoid v' =>
+  NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
+  Free (WidgetStep v') a
+combineConts ws = wrap $ WidgetStepView $ merge ws
+
+merge ::
+  forall v' a.
+  Monoid v' =>
+  NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
+  WithHandler v' (Free (WidgetStep v') a)
+merge ws = mapWithHandler (\nea -> combine (map Widget nea)) $ mergeWithHandlers (wrap <<< WidgetStepView) ws
 
 
 mergeWithHandlers
