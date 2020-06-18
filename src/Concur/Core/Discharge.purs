@@ -28,16 +28,11 @@ discharge handler (Widget w) = case resume w of
     WidgetStepEff eff -> do
       w' <- eff
       discharge handler (Widget w')
-    WidgetStepCont (Observer o) -> do
-      _ <- o \y -> handler (Right (Widget y))
-      pure Nothing
-    WidgetStepHalt -> pure Nothing
-    WidgetStepView v w' ->
-      -- Successive views overwrite previous views
-      (Just <<< fromMaybe v) <$> discharge handler (Widget w')
-    WidgetStepMapView f w' ->
-      map f <$> discharge handler (Widget w')
+    WidgetStepStuck -> pure Nothing
+    WidgetStepView f ->
+      pure $ Just $ f \y -> handler (Right (Widget y))
 
+{-
 -- | Discharge only the top level blocking effect of a widget (if any) to get access to the view
 -- | Returns the view if any, and the remaining widget, which could be the same widget.
 dischargePartialEffect ::
@@ -51,13 +46,11 @@ dischargePartialEffect w = case resume (unWidget w) of
     WidgetStepEff eff -> do
       w' <- eff
       dischargePartialEffect (Widget w')
-    WidgetStepCont _ -> pure (Tuple w Nothing)
-    WidgetStepHalt -> pure (Tuple w Nothing)
-    WidgetStepView v w' ->
-      -- Successive views overwrite previous views
+    -- WidgetStepCont _ -> pure (Tuple w Nothing)
+    WidgetStepStuck -> pure (Tuple w Nothing)
+    WidgetStepView f ->
       map (Just <<< fromMaybe v) <$> dischargePartialEffect (Widget w')
-    WidgetStepMapView f w' ->
-      map (map f) <$> dischargePartialEffect (Widget w')
+-}
 
 {-
 -- | Discharge a widget, forces async resolution of the continuation.

@@ -2,7 +2,6 @@ module Concur.Core.Types where
 
 import Prelude
 
-import Concur.Core.Event (Observer(..), parIndex)
 import Control.Alternative (class Alternative)
 import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
 import Control.Monad.Rec.Class (class MonadRec)
@@ -13,32 +12,29 @@ import Data.Array as A
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
-import Data.FoldableWithIndex (foldrWithIndex)
+import Data.FoldableWithIndex (foldMapWithIndex, foldrWithIndex)
 import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (class MonadEffect)
 
+type WithHandler b a = ((a -> Effect Unit)) -> b
+
+mapWithHandler :: forall a b c. (a -> b) -> WithHandler c a -> WithHandler c b
+mapWithHandler f g = \cb -> g (cb <<< f)
+
 data WidgetStep v a
   = WidgetStepEff (Effect a)
-  | WidgetStepCont (Observer a)
-  -- The expectation is that these views will never be sequenced in a row
-  -- However, if they are sequenced in a row, only the last view will take effect
-  -- TODO: Perhaps the views should be concatenated??
-  | WidgetStepView v a
-  -- This modifies all views inside it
-  | WidgetStepMapView (v -> v) a
-  -- TODO: This modifies all views inside it, but can also add handlers
-  -- TODO: | WidgetStepNestedView ((b -> Effect Unit) -> v -> v) a
-  | WidgetStepHalt
+  | WidgetStepView (WithHandler v a)
+  -- TODO
+  -- | WidgetStepViewStuck v
+  | WidgetStepStuck
 
 -- derive instance widgetStepFunctor :: Functor (WidgetStep v)
 instance functorWidgetStep :: Functor (WidgetStep v) where
   map f (WidgetStepEff e) = WidgetStepEff (map f e)
-  map f (WidgetStepView v a) = WidgetStepView v (f a)
-  map f (WidgetStepMapView g a) = WidgetStepMapView g (f a)
-  map f (WidgetStepCont o) = WidgetStepCont (map f o)
-  map _ WidgetStepHalt = WidgetStepHalt
+  map f (WidgetStepView v) = WidgetStepView $ mapWithHandler f v
+  map _ WidgetStepStuck = WidgetStepStuck
 
 newtype Widget v a
   = Widget (Free (WidgetStep v) a)
@@ -87,26 +83,24 @@ instance widgetMultiAlternative ::
 
           -- TODO: Instead of using wrap here, maybe collapse views
           --       This may be important for performance
-          WidgetStepView v w -> wrap $ WidgetStepView v $ combine $ NEA.cons' (Widget w) x.tail
-          WidgetStepMapView f w -> wrap $ WidgetStepMapView f $ combine $ NEA.cons' (Widget w) x.tail
-          WidgetStepCont o -> combineInner (NEA.singleton o) x.tail
-          WidgetStepHalt -> unWidget (orr x.tail)
+          WidgetStepView o -> combineInner (NEA.singleton o) x.tail
+          WidgetStepStuck -> unWidget (orr x.tail)
 
     combineInner ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
       Array (Widget v' a) ->
       Free (WidgetStep v') a
-    combineInner ws freeArr = case NEA.fromArray freeArr of
+    combineInner vs freeArr = case NEA.fromArray freeArr of
       -- We have collected all the inner conts
-      Nothing -> combineConts ws --wrap $ WidgetStep $ Right wsr
-      Just freeNarr -> combineInner1 ws freeNarr
+      Nothing -> combineConts vs --wrap $ WidgetStep $ Right wsr
+      Just freeNarr -> combineInner1 vs freeNarr
 
     combineInner1 ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
       NonEmptyArray (Widget v' a) ->
       Free (WidgetStep v') a
     combineInner1 ws freeNarr =
@@ -116,34 +110,34 @@ instance widgetMultiAlternative ::
         Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
             w <- eff
             pure $ combineInner1 ws $ NEA.cons' (Widget w) x.tail
-        Left (WidgetStepView v w) -> wrap $ WidgetStepView v $ combineInner1 ws (NEA.cons' (Widget w) x.tail)
-        Left (WidgetStepMapView f w) -> wrap $ WidgetStepMapView f $ combineInner1 ws (NEA.cons' (Widget w) x.tail)
-        Left (WidgetStepCont c) -> combineInner (NEA.snoc ws c) x.tail
-        Left WidgetStepHalt -> combineInner ws x.tail
+        Left (WidgetStepView c) -> combineInner (NEA.snoc ws c) x.tail
+        Left WidgetStepStuck -> combineInner ws x.tail
 
     combineConts ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
       Free (WidgetStep v') a
-    combineConts ws = wrap $ WidgetStepCont $ merge ws
+    combineConts ws = wrap $ WidgetStepView $ merge ws
 
     merge ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
-      Observer (Free (WidgetStep v') a)
-    merge ws = map func obs
-      where
-      wsm = map (Widget <<< wrap <<< WidgetStepCont) ws
+      NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
+      WithHandler v' (Free (WidgetStep v') a)
+    merge ws = mapWithHandler (\nea -> combine (map Widget nea)) $ mergeWithHandlers (wrap <<< WidgetStepView) ws
 
-      -- TODO: We know the array is non-empty. We need something like foldl1WithIndex.
-      -- TODO: All the Observer in ws is already discharged. Use a more efficient way than combine to process it
-      -- TODO: Also, more importantly, we would like to not have to cancel running fibers unless one of them returns a result
-      -- MAP OVER OBSERVER. SEE IF WE CAN OPTIMISE THIS (COYONEDA).
-      obs = parIndex (NEA.toArray ws)
-      func {i, val:e} = combine (fromMaybe wsm (NEA.updateAt i (Widget e) wsm))
 
+mergeWithHandlers
+  :: forall v a
+   . Monoid v
+  => (WithHandler v a -> a)
+  -> NonEmptyArray (WithHandler v a)
+  -> WithHandler v (NEA.NonEmptyArray a)
+mergeWithHandlers mkh vs = \cb ->
+  let mkCb i = \val -> cb (fromMaybe vs' (NEA.updateAt i val vs'))
+  in foldMapWithIndex (\i f -> f (mkCb i)) vs
+  where vs' = map mkh vs
 
 -- | Run multiple widgets in parallel until *all* finish, and collect their outputs
 -- | Contrast with `orr`
@@ -193,39 +187,15 @@ mapView f (Widget w) = Widget (hoistFree (mapViewStep f) w)
 
 mapViewStep :: forall v a. (v -> v) -> WidgetStep v a -> WidgetStep v a
 mapViewStep f (WidgetStepEff e) = WidgetStepEff e
-mapViewStep f (WidgetStepCont c) = WidgetStepCont c
-mapViewStep f (WidgetStepView v a) = WidgetStepView (f v) a
-mapViewStep f (WidgetStepMapView g a) = WidgetStepMapView (f <<< g) a
-mapViewStep f WidgetStepHalt = WidgetStepHalt
+mapViewStep f (WidgetStepView v) = WidgetStepView (map f v)
+mapViewStep f WidgetStepStuck = WidgetStepStuck
 
-mapViewHandler :: forall v a. ((a -> Effect Unit) -> v -> v) -> Widget v a -> Widget v a
-mapViewHandler h (Widget w) = case resume w of
-  Right _ -> Widget w
-  Left x -> case x of
-    WidgetStepHalt -> Widget w
-    WidgetStepEff eff -> Widget $ wrap $ WidgetStepEff do
-      w' <- eff
-      pure $ unWidget $ mapViewHandler h (Widget w')
-    WidgetStepView v w' -> mapViewHandlerInnerView v w'
-    WidgetStepCont o -> Widget $ wrap $ WidgetStepCont $ map func o
-
-
-  where
-  func w'' = mapViewHandler h (Widget w'')
-
-  mapViewHandlerInnerView v w' = case resume w' of
-    Right _ -> Widget w'
-    Left y -> case y of
-      WidgetStepHalt -> Widget w'
-      WidgetStepEff eff -> Widget $ wrap $ WidgetStepEff do
-        w'' <- eff
-        pure $ mapViewHandlerInnerView v w''
-
-halt :: forall v a. Widget v a
-halt = Widget $ liftF WidgetStepHalt
+stuck :: forall v a. Widget v a
+stuck = Widget $ liftF WidgetStepStuck
 
 display :: forall v a. v -> Widget v a
-display v = Widget $ wrap $ WidgetStepView v $ unWidget halt
+-- TODO: Instead of carrying around a callback which will never be called, use a special constructor WidgetStepViewStuck
+display v = Widget $ wrap $ WidgetStepView \cb -> v
 
 -- Sync eff
 effAction ::
@@ -237,16 +207,16 @@ effAction = Widget <<< liftF <<< WidgetStepEff
 -- Async aff
 affAction ::
   forall a v.
-  Observer a ->
+  WithHandler v a ->
   Widget v a
-affAction = Widget <<< liftF <<< WidgetStepCont
+affAction = Widget <<< liftF <<< WidgetStepView
 
 -- Async callback
-asyncAction
-  :: forall v a
-  .  ((a -> Effect Unit) -> Effect (Effect Unit))
-  -> Widget v a
-asyncAction handler = affAction (Observer handler)
+-- asyncAction
+--   :: forall v a
+--   .  ((a -> Effect Unit) -> Effect (Effect Unit))
+--   -> Widget v a
+-- asyncAction handler = affAction (Observer handler)
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
   liftEffect = effAction
@@ -254,3 +224,16 @@ instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
 -- instance widgetMonadObserver :: (Monoid v) => MonadObserver (Widget v) where
 --   liftObserver = affAction mempty
     -- Widget $ liftF $ WidgetStep $ Right { view: mempty, cont: aff }
+
+mkNodeWidget :: forall v a. ((Free (WidgetStep v) a -> Effect Unit) -> v -> v) -> Widget v a -> Widget v a
+mkNodeWidget f (Widget w) = case resume w of
+  Right _ -> Widget w
+  Left x -> case x of
+    WidgetStepStuck -> Widget w
+    WidgetStepEff eff -> Widget $ wrap $ WidgetStepEff do
+      w' <- eff
+      pure $ unWidget $ mkNodeWidget f $ Widget w'
+    WidgetStepView g -> Widget $ wrap $ WidgetStepView \cb -> f cb (g cb)
+
+mkLeafWidget :: forall v a. ((Free (WidgetStep v) a -> Effect Unit) -> v) -> Widget v a
+mkLeafWidget = Widget <<< wrap <<< WidgetStepView
