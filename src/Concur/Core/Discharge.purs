@@ -2,12 +2,10 @@ module Concur.Core.Discharge where
 
 import Prelude
 
-import Concur.Core.Event (Observer(..))
-import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
+import Concur.Core.Types (Widget(..), WidgetStep(..))
 import Control.Monad.Free (resume)
 import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Tuple (Tuple(..))
+import Data.Maybe (Maybe(..))
 import Effect (Effect)
 import Effect.Exception (Error)
 
@@ -30,7 +28,7 @@ discharge handler (Widget w) = case resume w of
       discharge handler (Widget w')
     WidgetStepStuck -> pure Nothing
     WidgetStepView f ->
-      pure $ Just $ f \y -> handler (Right (Widget y))
+      Just <$> f \y -> handler (Right (Widget y))
 
 {-
 -- | Discharge only the top level blocking effect of a widget (if any) to get access to the view

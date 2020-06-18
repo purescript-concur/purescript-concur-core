@@ -18,7 +18,7 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (class MonadEffect)
 
-type WithHandler b a = ((a -> Effect Unit)) -> b
+type WithHandler b a = ((a -> Effect Unit)) -> Effect b
 
 mapWithHandler :: forall a b c. (a -> b) -> WithHandler c a -> WithHandler c b
 mapWithHandler f g = \cb -> g (cb <<< f)
@@ -176,7 +176,7 @@ mapView f (Widget w) = Widget (hoistFree (mapViewStep f) w)
 
 mapViewStep :: forall v a. (v -> v) -> WidgetStep v a -> WidgetStep v a
 mapViewStep f (WidgetStepEff e) = WidgetStepEff e
-mapViewStep f (WidgetStepView v) = WidgetStepView (map f v)
+mapViewStep f (WidgetStepView v) = WidgetStepView (map f <$> v)
 mapViewStep f WidgetStepStuck = WidgetStepStuck
 
 stuck :: forall v a. Widget v a
@@ -184,7 +184,7 @@ stuck = Widget $ liftF WidgetStepStuck
 
 display :: forall v a. v -> Widget v a
 -- TODO: Instead of carrying around a callback which will never be called, use a special constructor WidgetStepViewStuck
-display v = Widget $ wrap $ WidgetStepView \cb -> v
+display v = Widget $ wrap $ WidgetStepView \cb -> pure v
 
 -- Sync eff
 effAction ::
@@ -222,7 +222,9 @@ mkNodeWidget f (Widget w) = case resume w of
     WidgetStepEff eff -> Widget $ wrap $ WidgetStepEff do
       w' <- eff
       pure $ unWidget $ mkNodeWidget f $ Widget w'
-    WidgetStepView g -> Widget $ wrap $ WidgetStepView \cb -> f cb (g cb)
+    WidgetStepView g -> Widget $ wrap $ WidgetStepView \cb -> f cb <$> g cb
 
 mkLeafWidget :: forall v a. ((Free (WidgetStep v) a -> Effect Unit) -> v) -> Widget v a
-mkLeafWidget = Widget <<< wrap <<< WidgetStepView
+mkLeafWidget = Widget <<< wrap <<< WidgetStepView <<< adapter
+  where
+  adapter h cb = pure (h cb)
