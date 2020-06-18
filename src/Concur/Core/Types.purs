@@ -81,8 +81,6 @@ instance widgetMultiAlternative ::
             w <- eff
             pure $ combine $ NEA.cons' (Widget w) x.tail
 
-          -- TODO: Instead of using wrap here, maybe collapse views
-          --       This may be important for performance
           WidgetStepView o -> combineInner (NEA.singleton o) x.tail
           WidgetStepStuck -> unWidget (orr x.tail)
 
@@ -92,26 +90,17 @@ instance widgetMultiAlternative ::
       NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
       Array (Widget v' a) ->
       Free (WidgetStep v') a
-    combineInner vs freeArr = case NEA.fromArray freeArr of
+    combineInner vs freeArr = case A.uncons freeArr of
       -- We have collected all the inner conts
-      Nothing -> combineConts vs --wrap $ WidgetStep $ Right wsr
-      Just freeNarr -> combineInner1 vs freeNarr
-
-    combineInner1 ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
-      NonEmptyArray (Widget v' a) ->
-      Free (WidgetStep v') a
-    combineInner1 ws freeNarr =
-      let x = NEA.uncons freeNarr
-      in case resume (unWidget x.head) of
+      Nothing -> combineConts vs
+      Just x -> case resume (unWidget x.head) of
         Right a -> pure a
-        Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
+        Left xx -> case xx of
+          WidgetStepEff eff -> wrap $ WidgetStepEff do
             w <- eff
-            pure $ combineInner1 ws $ NEA.cons' (Widget w) x.tail
-        Left (WidgetStepView c) -> combineInner (NEA.snoc ws c) x.tail
-        Left WidgetStepStuck -> combineInner ws x.tail
+            pure $ combineInner vs $ A.cons (Widget w) x.tail
+          WidgetStepView c -> combineInner (NEA.snoc vs c) x.tail
+          WidgetStepStuck -> combineInner vs x.tail
 
     combineConts ::
       forall v' a.
