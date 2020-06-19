@@ -90,30 +90,28 @@ combineInner ::
   NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
   Array (Widget v' a) ->
   Free (WidgetStep v') a
-combineInner vs freeArr = case A.uncons freeArr of
-  -- case traverse (map pure <<< myResume) freeArr of
-  --   Left a -> pure a
-  --   Right xx -> do
-  --     ls <- traverse extractView xx
-  -- We have collected all the inner conts
-  Nothing -> combineConts vs
+combineInner vs freeArr =
+  case combineInnerGo vs freeArr of
+    Left w -> w
+    Right (Tuple v f) -> combineInner v f
+
+-- Extracted `combineInnerGo` to allow `combineInner` to get Tail Call Optimisation
+combineInnerGo ::
+  forall v' a.
+  Monoid v' =>
+  NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
+  Array (Widget v' a) ->
+  Either (Free (WidgetStep v') a) (Tuple (NonEmptyArray (WithHandler v' (Free (WidgetStep v') a))) (Array (Widget v' a)))
+combineInnerGo vs freeArr = case A.uncons freeArr of
+  Nothing -> Left $ combineConts vs
   Just x -> case resume (unWidget x.head) of
-    Right a -> pure a
+    Right a -> Left $ pure a
     Left xx -> case xx of
-      WidgetStepEff eff -> wrap $ WidgetStepEff do
+      WidgetStepEff eff -> Left $ wrap $ WidgetStepEff do
         w <- eff
         pure $ combineInner vs $ A.cons (Widget w) x.tail
-      WidgetStepView c -> combineInner (NEA.snoc vs c) x.tail
-      WidgetStepStuck -> combineInner vs x.tail
-
-
--- myResume = resume' (\g i -> Right (i <$> g)) Left
---
--- extractView (WidgetStepEff eff) = do
---   w' <- eff
---   extractView w'
--- extractView (WidgetStepView c) = pure [c]
--- extractView WidgetStepStuck = pure []
+      WidgetStepView c -> Right $ Tuple (NEA.snoc vs c) x.tail
+      WidgetStepStuck -> Right $ Tuple vs x.tail
 
 combineConts ::
   forall v' a.
