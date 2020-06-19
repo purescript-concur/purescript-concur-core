@@ -3,20 +3,20 @@ module Concur.Core.Types where
 import Prelude
 
 import Control.Alternative (class Alternative)
-import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
+import Control.Monad.Free (Free, hoistFree, liftF, resume, resume', wrap)
 import Control.Monad.Rec.Class (class MonadRec)
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Plus (class Alt, class Plus, alt, empty)
 import Control.ShiftMap (class ShiftMap)
 import Data.Array as A
-import Data.Array.NonEmpty (NonEmptyArray)
-import Data.Array.NonEmpty as NEA
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.FoldableWithIndex (foldMapWithIndex, foldrWithIndex)
 import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
+import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (class MonadEffect)
+import Unsafe.Coerce (unsafeCoerce)
 
 type WithHandler b a = ((a -> Effect Unit)) -> Effect (Maybe b)
 
@@ -24,6 +24,15 @@ mapWithHandler :: forall a b c. (a -> b) -> WithHandler c a -> WithHandler c b
 mapWithHandler f g = \cb -> g (cb <<< f)
 
 newtype WidgetStep v a = WidgetStepView (WithHandler v a)
+
+unWidgetStep :: forall v a. WidgetStep v a -> WithHandler v a
+unWidgetStep (WidgetStepView f) = f
+
+unWidgetStepArray :: forall v a. Array (WidgetStep v a) -> Array (WithHandler v a)
+unWidgetStepArray arr = unsafeCoerce arr
+
+mkWidgetStepArray :: forall v a. Array (WithHandler v a) -> Array (WidgetStep v a)
+mkWidgetStepArray arr = unsafeCoerce arr
 
 -- derive instance widgetStepFunctor :: Functor (WidgetStep v)
 instance functorWidgetStep :: Functor (WidgetStep v) where
@@ -34,6 +43,12 @@ newtype Widget v a
 
 unWidget :: forall v a. Widget v a -> Free (WidgetStep v) a
 unWidget (Widget w) = w
+
+unWidgetArray :: forall v a. Array (Widget v a) -> Array (Free (WidgetStep v) a)
+unWidgetArray arr = unsafeCoerce arr
+
+mkWidgetArray :: forall v a. Array (Free (WidgetStep v) a) -> Array (Widget v a)
+mkWidgetArray arr = unsafeCoerce arr
 
 derive newtype instance widgetFunctor :: Functor (Widget v)
 
@@ -54,71 +69,33 @@ instance widgetMultiAlternative ::
   ( Monoid v
   ) =>
   MultiAlternative (Widget v) where
-  orr wss = case NEA.fromArray wss of
-    Just wsne -> Widget $ combine wsne
-    Nothing -> empty
+  orr wss = Widget $ combine $ unWidgetArray wss
 
 combine ::
-  forall v' a.
-  Monoid v' =>
-  NonEmptyArray (Widget v' a) ->
-  Free (WidgetStep v') a
-combine wfs =
-  let x = NEA.uncons wfs
-  in case resume (unWidget x.head) of
-    Right a -> pure a
-    -- TODO: This wrap probably cannot be wished away
-    Left xx -> case xx of
-      WidgetStepView o -> combineInner (NEA.singleton o) x.tail
+  forall v a.
+  Monoid v =>
+  Array (Free (WidgetStep v) a) ->
+  Free (WidgetStep v) a
+combine wfs = either pure (wrap <<< WidgetStepView <<< merge <<< unWidgetStepArray) (traverse myResume wfs)
 
-combineInner ::
-  forall v' a.
-  Monoid v' =>
-  NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
-  Array (Widget v' a) ->
-  Free (WidgetStep v') a
-combineInner vs freeArr =
-  case combineInnerGo vs freeArr of
-    Left w -> w
-    Right (Tuple v f) -> combineInner v f
-
--- Extracted `combineInnerGo` to allow `combineInner` to get Tail Call Optimisation
-combineInnerGo ::
-  forall v' a.
-  Monoid v' =>
-  NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
-  Array (Widget v' a) ->
-  Either (Free (WidgetStep v') a) (Tuple (NonEmptyArray (WithHandler v' (Free (WidgetStep v') a))) (Array (Widget v' a)))
-combineInnerGo vs freeArr = case A.uncons freeArr of
-  Nothing -> Left $ combineConts vs
-  Just x -> case resume (unWidget x.head) of
-    Right a -> Left $ pure a
-    Left xx -> case xx of
-      WidgetStepView c -> Right $ Tuple (NEA.snoc vs c) x.tail
-
-combineConts ::
-  forall v' a.
-  Monoid v' =>
-  NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
-  Free (WidgetStep v') a
-combineConts ws = wrap $ WidgetStepView $ merge ws
+myResume :: forall f a . Functor f => Free f a -> Either a (f (Free f a))
+myResume = resume' (\g i -> Right (i <$> g)) Left
 
 merge ::
   forall v' a.
   Monoid v' =>
-  NonEmptyArray (WithHandler v' (Free (WidgetStep v') a)) ->
+  Array (WithHandler v' (Free (WidgetStep v') a)) ->
   WithHandler v' (Free (WidgetStep v') a)
-merge ws = mapWithHandler (\nea -> combine (map Widget nea)) $ mergeWithHandlers (wrap <<< WidgetStepView) ws
-
+merge ws = mapWithHandler combine $ mergeWithHandlers (wrap <<< WidgetStepView) ws
 
 mergeWithHandlers
   :: forall v a
    . Monoid v
   => (WithHandler v a -> a)
-  -> NonEmptyArray (WithHandler v a)
-  -> WithHandler v (NEA.NonEmptyArray a)
+  -> Array (WithHandler v a)
+  -> WithHandler v (Array a)
 mergeWithHandlers mkh vs = \cb ->
-  let mkCb i = \val -> cb (fromMaybe vs' (NEA.updateAt i val vs'))
+  let mkCb i = \val -> cb (fromMaybe vs' (A.updateAt i val vs'))
   in foldMapWithIndex (\i f -> f (mkCb i)) vs
   where vs' = map mkh vs
 
