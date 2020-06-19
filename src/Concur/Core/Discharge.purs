@@ -23,12 +23,8 @@ discharge ::
 discharge handler (Widget w) = case resume w of
   Right _ -> pure Nothing
   Left x -> case x of
-    WidgetStepEff eff -> do
-      w' <- eff
-      discharge handler (Widget w')
-    WidgetStepStuck -> pure Nothing
     WidgetStepView f ->
-      Just <$> f \y -> handler (Right (Widget y))
+      f \y -> handler (Right (Widget y))
 
 {-
 -- | Discharge only the top level blocking effect of a widget (if any) to get access to the view

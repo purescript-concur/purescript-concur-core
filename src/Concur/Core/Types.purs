@@ -3,7 +3,7 @@ module Concur.Core.Types where
 import Prelude
 
 import Control.Alternative (class Alternative)
-import Control.Monad.Free (Free, hoistFree, liftF, resume, resume', wrap)
+import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
 import Control.Monad.Rec.Class (class MonadRec)
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Plus (class Alt, class Plus, alt, empty)
@@ -14,28 +14,20 @@ import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
 import Data.FoldableWithIndex (foldMapWithIndex, foldrWithIndex)
 import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
-import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (class MonadEffect)
 
-type WithHandler b a = ((a -> Effect Unit)) -> Effect b
+type WithHandler b a = ((a -> Effect Unit)) -> Effect (Maybe b)
 
 mapWithHandler :: forall a b c. (a -> b) -> WithHandler c a -> WithHandler c b
 mapWithHandler f g = \cb -> g (cb <<< f)
 
-data WidgetStep v a
-  = WidgetStepEff (Effect a)
-  | WidgetStepView (WithHandler v a)
-  -- TODO
-  -- | WidgetStepViewStuck v
-  | WidgetStepStuck
+newtype WidgetStep v a = WidgetStepView (WithHandler v a)
 
 -- derive instance widgetStepFunctor :: Functor (WidgetStep v)
 instance functorWidgetStep :: Functor (WidgetStep v) where
-  map f (WidgetStepEff e) = WidgetStepEff (map f e)
   map f (WidgetStepView v) = WidgetStepView $ mapWithHandler f v
-  map _ WidgetStepStuck = WidgetStepStuck
 
 newtype Widget v a
   = Widget (Free (WidgetStep v) a)
@@ -77,12 +69,7 @@ combine wfs =
     Right a -> pure a
     -- TODO: This wrap probably cannot be wished away
     Left xx -> case xx of
-      WidgetStepEff eff -> wrap $ WidgetStepEff do
-        w <- eff
-        pure $ combine $ NEA.cons' (Widget w) x.tail
-
       WidgetStepView o -> combineInner (NEA.singleton o) x.tail
-      WidgetStepStuck -> unWidget (orr x.tail)
 
 combineInner ::
   forall v' a.
@@ -107,11 +94,7 @@ combineInnerGo vs freeArr = case A.uncons freeArr of
   Just x -> case resume (unWidget x.head) of
     Right a -> Left $ pure a
     Left xx -> case xx of
-      WidgetStepEff eff -> Left $ wrap $ WidgetStepEff do
-        w <- eff
-        pure $ combineInner vs $ A.cons (Widget w) x.tail
       WidgetStepView c -> Right $ Tuple (NEA.snoc vs c) x.tail
-      WidgetStepStuck -> Right $ Tuple vs x.tail
 
 combineConts ::
   forall v' a.
@@ -186,23 +169,21 @@ mapView :: forall a v. (v -> v) -> Widget v a -> Widget v a
 mapView f (Widget w) = Widget (hoistFree (mapViewStep f) w)
 
 mapViewStep :: forall v a. (v -> v) -> WidgetStep v a -> WidgetStep v a
-mapViewStep f (WidgetStepEff e) = WidgetStepEff e
-mapViewStep f (WidgetStepView v) = WidgetStepView (map f <$> v)
-mapViewStep f WidgetStepStuck = WidgetStepStuck
-
-stuck :: forall v a. Widget v a
-stuck = Widget $ liftF WidgetStepStuck
+mapViewStep f (WidgetStepView v) = WidgetStepView (map (map f) <$> v)
 
 display :: forall v a. v -> Widget v a
 -- TODO: Instead of carrying around a callback which will never be called, use a special constructor WidgetStepViewStuck
-display v = Widget $ wrap $ WidgetStepView \cb -> pure v
+display v = Widget $ wrap $ WidgetStepView \cb -> pure (Just v)
 
 -- Sync eff
 effAction ::
   forall a v.
   Effect a ->
   Widget v a
-effAction = Widget <<< liftF <<< WidgetStepEff
+effAction eff = Widget $ liftF $ WidgetStepView \cb -> do
+  a <- eff
+  cb a
+  pure Nothing
 
 -- Async aff
 affAction ::
@@ -229,13 +210,9 @@ mkNodeWidget :: forall v a. ((Free (WidgetStep v) a -> Effect Unit) -> v -> v) -
 mkNodeWidget f (Widget w) = case resume w of
   Right _ -> Widget w
   Left x -> case x of
-    WidgetStepStuck -> Widget w
-    WidgetStepEff eff -> Widget $ wrap $ WidgetStepEff do
-      w' <- eff
-      pure $ unWidget $ mkNodeWidget f $ Widget w'
-    WidgetStepView g -> Widget $ wrap $ WidgetStepView \cb -> f cb <$> g cb
+    WidgetStepView g -> Widget $ wrap $ WidgetStepView \cb -> map (f cb) <$> g cb
 
 mkLeafWidget :: forall v a. ((Free (WidgetStep v) a -> Effect Unit) -> v) -> Widget v a
 mkLeafWidget = Widget <<< wrap <<< WidgetStepView <<< adapter
   where
-  adapter h cb = pure (h cb)
+  adapter h cb = pure $ Just $ h cb
