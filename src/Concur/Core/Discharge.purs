@@ -2,29 +2,29 @@ module Concur.Core.Discharge where
 
 import Prelude
 
-import Concur.Core.Types (Widget(..), WidgetStep(..))
-import Control.Monad.Free (resume)
+-- import Concur.Core.Types (Widget(..), WidgetStep(..))
+-- import Control.Monad.Free (resume)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Effect (Effect)
 import Effect.Exception (Error)
 
--- Widget discharge strategies
--- | Discharge a widget.
--- | 1. Runs the Effect action
--- | 2. Forks the Aff action
--- | 3. Extracts and returns the view
-discharge ::
-  forall a v.
-  Monoid v =>
-  (Either Error (Widget v a) -> Effect Unit) ->
-  Widget v a ->
-  Effect (Maybe v)
-discharge handler (Widget w) = case resume w of
-  Right _ -> pure Nothing
-  Left x -> case x of
-    WidgetStepView f ->
-      f \y -> handler (Right (Widget y))
+-- -- Widget discharge strategies
+-- -- | Discharge a widget.
+-- -- | 1. Runs the Effect action
+-- -- | 2. Forks the Aff action
+-- -- | 3. Extracts and returns the view
+-- discharge ::
+--   forall a v.
+--   Monoid v =>
+--   (Either Error (Widget v a) -> Effect Unit) ->
+--   Widget v a ->
+--   Effect (Maybe v)
+-- discharge handler (Widget w) = case resume w of
+--   Right _ -> pure Nothing
+--   Left x -> case x of
+--     WidgetStepView f ->
+--       f \y -> handler (Right (Widget y))
 
 {-
 -- | Discharge only the top level blocking effect of a widget (if any) to get access to the view

@@ -8,7 +8,6 @@ You can edit this file as you like.
     [ "arrays"
     , "console"
     , "foldable-traversable"
-    , "free"
     , "nonempty"
     , "profunctor-lenses"
     , "tailrec"

@@ -3,101 +3,119 @@ module Concur.Core.Types where
 import Prelude
 
 import Control.Alternative (class Alternative)
-import Control.Monad.Free (Free, hoistFree, liftF, resume, resume', wrap)
-import Control.Monad.Rec.Class (class MonadRec)
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Plus (class Alt, class Plus, alt, empty)
 import Control.ShiftMap (class ShiftMap)
+import Data.Array (fold)
 import Data.Array as A
-import Data.Either (Either(..), either)
-import Data.FoldableWithIndex (foldMapWithIndex, foldrWithIndex)
-import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
-import Data.Traversable (traverse)
+import Data.Either (Either(..))
+import Data.FoldableWithIndex (foldrWithIndex)
+import Data.Maybe (Maybe(Just, Nothing), fromMaybe)
+import Data.Traversable (sequence)
+import Data.TraversableWithIndex (traverseWithIndex)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (class MonadEffect)
+import Effect.Ref as Ref
 import Unsafe.Coerce (unsafeCoerce)
 
-type WithHandler b a = ((a -> Effect Unit)) -> Effect (Maybe b)
+-- FAQ: What's stopping the widget from calling the handler again after having returned a value (Right a)?
+-- Ans: Discipline.
+type WithHandler v a = (Either v a -> Effect Unit) -> Effect (Maybe v)
 
-mapWithHandler :: forall a b c. (a -> b) -> WithHandler c a -> WithHandler c b
-mapWithHandler f g = \cb -> g (cb <<< f)
+mapViewWithHandler :: forall v1 v2 a. (v1 -> v2) -> WithHandler v1 a -> WithHandler v2 a
+mapViewWithHandler f w1 = \cb -> do
+  v <- w1 \eval -> case eval of
+    Left v -> cb (Left (f v))
+    Right a -> cb (Right a)
+  pure $ f <$> v
 
-newtype WidgetStep v a = WidgetStepView (WithHandler v a)
+-- A Widget is an initial view, followed by a series of async views
+newtype Widget v a = Widget (WithHandler v a)
 
-unWidgetStep :: forall v a. WidgetStep v a -> WithHandler v a
-unWidgetStep (WidgetStepView f) = f
+unWidget :: forall v a. Widget v a -> WithHandler v a
+unWidget (Widget f) = f
 
-unWidgetStepArray :: forall v a. Array (WidgetStep v a) -> Array (WithHandler v a)
-unWidgetStepArray arr = unsafeCoerce arr
-
-mkWidgetStepArray :: forall v a. Array (WithHandler v a) -> Array (WidgetStep v a)
-mkWidgetStepArray arr = unsafeCoerce arr
-
--- derive instance widgetStepFunctor :: Functor (WidgetStep v)
-instance functorWidgetStep :: Functor (WidgetStep v) where
-  map f (WidgetStepView v) = WidgetStepView $ mapWithHandler f v
-
-newtype Widget v a
-  = Widget (Free (WidgetStep v) a)
-
-unWidget :: forall v a. Widget v a -> Free (WidgetStep v) a
-unWidget (Widget w) = w
-
-unWidgetArray :: forall v a. Array (Widget v a) -> Array (Free (WidgetStep v) a)
+unWidgetArray :: forall v a. Array (Widget v a) -> Array (WithHandler v a)
 unWidgetArray arr = unsafeCoerce arr
 
-mkWidgetArray :: forall v a. Array (Free (WidgetStep v) a) -> Array (Widget v a)
+mkWidgetArray :: forall v a. Array (WithHandler v a) -> Array (Widget v a)
 mkWidgetArray arr = unsafeCoerce arr
 
-derive newtype instance widgetFunctor :: Functor (Widget v)
+instance functorWidget :: Functor (Widget v) where
+  map f (Widget g) = Widget \cb -> g (cb <<< map f)
 
-derive newtype instance widgetBind :: Bind (Widget v)
+instance widgetBind :: Bind (Widget v) where
+  bind (Widget f) h = Widget \cb ->
+    let fing eva = case eva of
+          Left v -> cb (Left v)
+          Right a -> do
+            mv <- unWidget (h a) cb
+            case mv of
+              Nothing -> pure unit
+              Just v -> cb (Left v)
+    in f fing
 
-derive newtype instance widgetApplicative :: Applicative (Widget v)
+instance widgetApplicative :: Applicative (Widget v) where
+  pure a = Widget \cb -> cb (Right a) *> pure Nothing
 
-derive newtype instance widgetApply :: Apply (Widget v)
+instance widgetApply :: Apply (Widget v) where
+  apply x y = do
+    a <- x
+    b <- y
+    pure (a b)
 
 instance widgetMonad :: Monad (Widget v)
 
-derive newtype instance widgetMonadRec :: MonadRec (Widget v)
+-- derive newtype instance widgetMonadRec :: MonadRec (Widget v)
 
 instance widgetShiftMap :: ShiftMap (Widget v) (Widget v) where
   shiftMap f = f identity
 
-instance widgetMultiAlternative ::
-  ( Monoid v
-  ) =>
-  MultiAlternative (Widget v) where
-  orr wss = Widget $ combine $ unWidgetArray wss
+instance widgetMultiAlternative :: (Monoid v) => MultiAlternative (Widget v) where
+  orr wss = Widget \cb -> do
+    -- Oh the mutation!
+    doneRef <- Ref.new false
+    viewsRef <- Ref.new [Nothing]
+    let
+      -- mkCb :: Int -> Either v a -> Effect Unit
+      mkCb i = \eval -> case eval of
+        Right a -> do
+          isDone <- Ref.read doneRef
+          Ref.write true doneRef
+          when (not isDone) $ cb (Right a)
+        Left v -> do
+          isDone <- Ref.read doneRef
+          when (not isDone) do
+            vs <- Ref.read viewsRef
+            let mvs' = A.updateAt i (Just v) vs
+            case mvs' of
+              Nothing -> pure unit
+              Just vs' -> do
+                Ref.write vs' viewsRef
+                case sequence vs of
+                  Nothing -> pure unit
+                  Just arr -> cb $ Left $ fold arr
+    vs <- traverseWithIndex (\i f -> f (mkCb i)) (unWidgetArray wss)
+    Ref.write vs viewsRef
+    case sequence vs of
+      Nothing -> pure Nothing
+      Just arr -> pure $ Just $ fold arr
 
-combine ::
-  forall v a.
-  Monoid v =>
-  Array (Free (WidgetStep v) a) ->
-  Free (WidgetStep v) a
-combine wfs = either pure (wrap <<< WidgetStepView <<< merge <<< unWidgetStepArray) (traverse myResume wfs)
 
-myResume :: forall f a . Functor f => Free f a -> Either a (f (Free f a))
-myResume = resume' (\g i -> Right (i <$> g)) Left
+instance widgetSemigroup :: (Monoid v) => Semigroup (Widget v a) where
+  append w1 w2 = orr [w1, w2]
 
-merge ::
-  forall v' a.
-  Monoid v' =>
-  Array (WithHandler v' (Free (WidgetStep v') a)) ->
-  WithHandler v' (Free (WidgetStep v') a)
-merge ws = mapWithHandler combine $ mergeWithHandlers (wrap <<< WidgetStepView) ws
+instance widgetMonoid :: (Monoid v) => Monoid (Widget v a) where
+  mempty = empty
 
-mergeWithHandlers
-  :: forall v a
-   . Monoid v
-  => (WithHandler v a -> a)
-  -> Array (WithHandler v a)
-  -> WithHandler v (Array a)
-mergeWithHandlers mkh vs = \cb ->
-  let mkCb i = \val -> cb (fromMaybe vs' (A.updateAt i val vs'))
-  in foldMapWithIndex (\i f -> f (mkCb i)) vs
-  where vs' = map mkh vs
+instance widgetAlt :: (Monoid v) => Alt (Widget v) where
+  alt = append
+
+instance widgetPlus :: (Monoid v) => Plus (Widget v) where
+  empty = Widget \cb -> pure Nothing
+
+instance widgetAlternative :: (Monoid v) => Alternative (Widget v)
 
 -- | Run multiple widgets in parallel until *all* finish, and collect their outputs
 -- | Contrast with `orr`
@@ -116,50 +134,21 @@ andd ws = do
       rest <- andd ws'
       pure $ fromMaybe [] $ A.insertAt i e rest
 
-instance widgetSemigroup :: (Monoid v) => Semigroup (Widget v a) where
-  append w1 w2 = orr [w1, w2]
 
-instance widgetMonoid :: (Monoid v) => Monoid (Widget v a) where
-  mempty = empty
-
-instance widgetAlt :: (Monoid v) => Alt (Widget v) where
-  alt = append
-
-instance widgetPlus :: (Monoid v) => Plus (Widget v) where
-  empty = display mempty
-
-instance widgetAlternative :: (Monoid v) => Alternative (Widget v)
-
--- Pause for a negligible amount of time. Forces continuations to pass through the trampoline.
--- (Somewhat similar to calling `setTimeout` of zero in Javascript)
--- Avoids stack overflows in (pathological) cases where a widget calls itself repeatedly without any intervening widgets or effects.
--- E.g. -
---   BAD  `counter n = if n < 10000 then counter (n+1) else pure n`
---   GOOD `counter n = if n < 10000 then (do pulse; counter (n+1)) else pure n`
-pulse ::
-  forall v.
-  Monoid v =>
-  Widget v Unit
-pulse = effAction (pure unit)
-
-mapView :: forall a v. (v -> v) -> Widget v a -> Widget v a
-mapView f (Widget w) = Widget (hoistFree (mapViewStep f) w)
-
-mapViewStep :: forall v a. (v -> v) -> WidgetStep v a -> WidgetStep v a
-mapViewStep f (WidgetStepView v) = WidgetStepView (map (map f) <$> v)
+mapView :: forall a v1 v2. (v1 -> v2) -> Widget v1 a -> Widget v2 a
+mapView f (Widget w) = Widget (mapViewWithHandler f w)
 
 display :: forall v a. v -> Widget v a
--- TODO: Instead of carrying around a callback which will never be called, use a special constructor WidgetStepViewStuck
-display v = Widget $ wrap $ WidgetStepView \cb -> pure (Just v)
+display v = Widget \cb -> pure (Just v)
 
 -- Sync eff
 effAction ::
   forall a v.
   Effect a ->
   Widget v a
-effAction eff = Widget $ liftF $ WidgetStepView \cb -> do
+effAction eff = Widget \cb -> do
   a <- eff
-  cb a
+  cb (Right a)
   pure Nothing
 
 -- Async aff
@@ -167,7 +156,7 @@ affAction ::
   forall a v.
   WithHandler v a ->
   Widget v a
-affAction = Widget <<< liftF <<< WidgetStepView
+affAction = Widget
 
 -- Async callback
 -- asyncAction
@@ -183,13 +172,9 @@ instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
 --   liftObserver = affAction mempty
     -- Widget $ liftF $ WidgetStep $ Right { view: mempty, cont: aff }
 
-mkNodeWidget :: forall v a. ((Free (WidgetStep v) a -> Effect Unit) -> v -> v) -> Widget v a -> Widget v a
-mkNodeWidget f (Widget w) = case resume w of
-  Right _ -> Widget w
-  Left x -> case x of
-    WidgetStepView g -> Widget $ wrap $ WidgetStepView \cb -> map (f cb) <$> g cb
+mkNodeWidget :: forall v1 v2 a. ((a -> Effect Unit) -> v1 -> v2) -> Widget v1 a -> Widget v2 a
+mkNodeWidget h (Widget f) = Widget \cb ->
+  mapViewWithHandler (h \a -> cb (Right a)) f cb
 
-mkLeafWidget :: forall v a. ((Free (WidgetStep v) a -> Effect Unit) -> v) -> Widget v a
-mkLeafWidget = Widget <<< wrap <<< WidgetStepView <<< adapter
-  where
-  adapter h cb = pure $ Just $ h cb
+mkLeafWidget :: forall v a. ((a -> Effect Unit) -> v) -> Widget v a
+mkLeafWidget h = Widget \cb -> pure $ Just $ h \a -> cb (Right a)

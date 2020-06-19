@@ -6,15 +6,9 @@ module Concur.Core
 )
 where
 
-import Concur.Core.Event (Observer(..), mkObserver, par)
 import Concur.Core.IsWidget (class IsWidget)
 import Concur.Core.LiftWidget (class LiftWidget, liftWidget)
-import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
-import Control.Category ((<<<))
-import Control.Monad.Free (Free, resume, wrap)
-import Data.Either (Either(..))
-import Effect (Effect)
-import Prelude (Unit, bind, pure, ($))
+import Concur.Core.Types (Widget(..), unWidget)
 
 -- Helpers for some very common use of unsafe blocking io
 
