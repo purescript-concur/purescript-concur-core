@@ -51,7 +51,7 @@ You can quickly get a production setup going (using Spago and Parcel) by cloning
 Else, if you use Spago -
 
 ```bash
-spago install purescript-concur-core
+spago install concur-core
 ```
 
 Or if you use Bower -
