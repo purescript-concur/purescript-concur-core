@@ -3,12 +3,12 @@ module Concur.Core.Types where
 import Prelude
 
 import Control.Alternative (class Alternative)
+import Control.Monad.Rec.Class (class MonadRec, Step(..), tailRecM) as Rec
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Plus (class Alt, class Plus, alt, empty)
 import Control.ShiftMap (class ShiftMap)
 import Data.Array (fold)
 import Data.Array as A
-import Data.Either (Either(..))
 import Data.FoldableWithIndex (foldrWithIndex)
 import Data.Maybe (Maybe(Just, Nothing), fromMaybe)
 import Data.Traversable (sequence)
@@ -20,15 +20,34 @@ import Effect.Ref as Ref
 import Effect.Uncurried (EffectFn1, mkEffectFn1, runEffectFn1)
 import Unsafe.Coerce (unsafeCoerce)
 
+data Change a
+class Patch a d where
+  patch :: a -> d -> a
+fromChange :: forall a d. Patch a d => Change a -> d
+fromChange = unsafeCoerce
+toChange :: forall a d. Patch a d => d -> Change a
+toChange = unsafeCoerce
+
+data Step v a
+  = View v
+  | Finish a
+  | Change (Change v)
+
+instance functorStep :: Functor (Step v) where
+  map f (View v) = View v
+  map f (Finish a) = Finish (f a)
+  map f (Change d) = Change d
+
 -- FAQ: What's stopping the widget from calling the handler again after having returned a value (Right a)?
 -- Ans: Discipline.
-type WithHandler v a = (EffectFn1 (Either v a) Unit) -> Effect (Maybe v)
+type WithHandler v a = (EffectFn1 (Step v a) Unit) -> Effect (Maybe v)
 
 mapViewWithHandler :: forall v1 v2 a. (v1 -> v2) -> WithHandler v1 a -> WithHandler v2 a
 mapViewWithHandler f w1 = \cb -> do
   v <- w1 $ mkEffectFn1 \eval -> case eval of
-    Left v -> runEffectFn1 cb (Left (f v))
-    Right a -> runEffectFn1 cb (Right a)
+    Change d -> pure unit
+    View v -> runEffectFn1 cb (View (f v))
+    Finish a -> runEffectFn1 cb (Finish a)
   pure $ f <$> v
 
 -- A Widget is an initial view, followed by a series of async views
@@ -48,17 +67,17 @@ instance functorWidget :: Functor (Widget v) where
 
 instance widgetBind :: Bind (Widget v) where
   bind (Widget f) h = Widget \cb ->
-    let fing = mkEffectFn1 $ case _ of
-          Left v -> runEffectFn1 cb (Left v)
-          Right a -> do
+    f $ mkEffectFn1 $ case _ of
+          View v -> runEffectFn1 cb (View v)
+          Change d -> pure unit
+          Finish a -> do
             mv <- unWidget (h a) cb
             case mv of
               Nothing -> pure unit
-              Just v -> runEffectFn1 cb (Left v)
-    in f fing
+              Just v -> runEffectFn1 cb (View v)
 
 instance widgetApplicative :: Applicative (Widget v) where
-  pure a = Widget \cb -> runEffectFn1 cb (Right a) *> pure Nothing
+  pure a = Widget \cb -> runEffectFn1 cb (Finish a) *> pure Nothing
 
 instance widgetApply :: Apply (Widget v) where
   apply x y = do
@@ -68,7 +87,13 @@ instance widgetApply :: Apply (Widget v) where
 
 instance widgetMonad :: Monad (Widget v)
 
--- derive newtype instance widgetMonadRec :: MonadRec (Widget v)
+-- Passthrough instance of monadrec.
+-- The Widget monad is already stack safe since it depends on callbacks
+instance widgetMonadRec :: Rec.MonadRec (Widget v) where
+  tailRecM f a = go =<< f a
+    where
+      go (Rec.Loop a') = Rec.tailRecM f a'
+      go (Rec.Done b) = pure b
 
 instance widgetShiftMap :: ShiftMap (Widget v) (Widget v) where
   shiftMap f = f identity
@@ -81,12 +106,14 @@ instance widgetMultiAlternative :: (Monoid v) => MultiAlternative (Widget v) whe
     let
       -- mkCb :: Int -> Either v a -> Effect Unit
       mkCb i = mkEffectFn1 \eval -> case eval of
-        Right a -> do
+        Finish a -> do
           isDone <- Ref.read doneRef
           when (not isDone) do
             Ref.write true doneRef
-            runEffectFn1 cb (Right a)
-        Left v -> do
+            runEffectFn1 cb (Finish a)
+        Change d -> do
+          pure unit
+        View v -> do
           isDone <- Ref.read doneRef
           when (not isDone) do
             vs <- Ref.read viewsRef
@@ -97,7 +124,7 @@ instance widgetMultiAlternative :: (Monoid v) => MultiAlternative (Widget v) whe
                 Ref.write vs' viewsRef
                 case sequence vs of
                   Nothing -> pure unit
-                  Just arr -> runEffectFn1 cb $ Left $ fold arr
+                  Just arr -> runEffectFn1 cb $ View $ fold arr
     vs <- traverseWithIndex (\i f -> f (mkCb i)) (unWidgetArray wss)
     Ref.write vs viewsRef
     case sequence vs of
@@ -150,7 +177,7 @@ effAction ::
   Widget v a
 effAction eff = Widget \cb -> do
   a <- eff
-  runEffectFn1 cb (Right a)
+  runEffectFn1 cb (Finish a)
   pure Nothing
 
 -- Async aff
@@ -176,7 +203,7 @@ instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
 
 mkNodeWidget :: forall v1 v2 a. ((a -> Effect Unit) -> v1 -> v2) -> Widget v1 a -> Widget v2 a
 mkNodeWidget h (Widget f) = Widget \cb ->
-  mapViewWithHandler (h \a -> runEffectFn1 cb (Right a)) f cb
+  mapViewWithHandler (h \a -> runEffectFn1 cb (Finish a)) f cb
 
 mkLeafWidget :: forall v a. ((a -> Effect Unit) -> v) -> Widget v a
-mkLeafWidget h = Widget \cb -> pure $ Just $ h \a -> runEffectFn1 cb (Right a)
+mkLeafWidget h = Widget \cb -> pure $ Just $ h \a -> runEffectFn1 cb (Finish a)
