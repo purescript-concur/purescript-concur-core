@@ -70,4 +70,4 @@ npm install
 npm run build
 ```
 
-#### Note that you would need to choose a Concur backend (such as the [React backend](https://pursuit.purescript.org/packages/purescript-concur-react)) before you can use the library to build UIs.
+#### Note that you will need to choose a Concur backend (such as the [React backend](https://pursuit.purescript.org/packages/purescript-concur-react)) before you can use the library to build UIs.
