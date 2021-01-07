@@ -4,7 +4,7 @@ import Prelude
 
 import Control.Alternative (class Alternative)
 import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
-import Control.Monad.Rec.Class (class MonadRec)
+import Control.Monad.Rec.Class (class MonadRec, tailRecM, Step(..))
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Parallel.Class (parallel, sequential)
 import Control.Plus (class Alt, class Plus, alt, empty)
@@ -13,7 +13,7 @@ import Data.Array as A
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
-import Data.FoldableWithIndex (foldlWithIndex, foldrWithIndex)
+import Data.FoldableWithIndex (foldrWithIndex, foldlWithIndex)
 import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
 import Data.Semigroup.Foldable (foldMap1)
 import Data.Tuple (Tuple(..))
@@ -89,50 +89,44 @@ instance widgetMultiAlternative ::
       Monoid v' =>
       NonEmptyArray (Free (WidgetStep v') a) ->
       Free (WidgetStep v') a
-    combine wfs =
-      let x = NEA.uncons wfs
-      in case resume x.head of
+    combine ws = wrap $ WidgetStepEff do
+      res <- widgetStepRecords ws
+      pure $ case res of
         Right a -> pure a
-        Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
-            w <- eff
-            pure $ combine $ NEA.cons' w x.tail
-        Left (WidgetStepView wsr) -> combineInner (NEA.singleton wsr) x.tail
+        Left wsrs -> wrap $ WidgetStepView
+            { view: foldMap1 _.view wsrs,
+             cont: merge wsrs (map _.cont wsrs)
+            }
 
-    combineInner ::
+    toWidgetStepRec ::
+      forall v' a.
+      Free (WidgetStep v') a ->
+      Effect (Either (WidgetStepRecord v' (Free (WidgetStep v') a)) a)
+    toWidgetStepRec widget = go widget
+      where
+        go w = case (resume w) of
+          Right a ->  pure $ Right  a
+          Left (WidgetStepEff eff) -> do
+            w' <- eff
+            go w'
+          Left (WidgetStepView wsr') -> pure $ Left wsr'
+
+    widgetStepRecords ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      Array (Free (WidgetStep v') a) ->
-      Free (WidgetStep v') a
-    combineInner ws freeArr = case NEA.fromArray freeArr of
-      -- We have collected all the inner views/conts
-      Nothing -> combineViewsConts ws --wrap $ WidgetStep $ Right wsr
-      Just freeNarr -> combineInner1 ws freeNarr
-
-    combineViewsConts ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      Free (WidgetStep v') a
-    combineViewsConts ws = wrap $ WidgetStepView
-      { view: foldMap1 _.view ws
-      , cont: merge ws (map _.cont ws)
-      }
-
-    combineInner1 ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
       NonEmptyArray (Free (WidgetStep v') a) ->
-      Free (WidgetStep v') a
-    combineInner1 ws freeNarr =
-      let x = NEA.uncons freeNarr
-      in case resume x.head of
-        Right a -> pure a
-        Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
-            w <- eff
-            pure $ combineInner1 ws $ NEA.cons' w x.tail
-        Left (WidgetStepView wsr) -> combineInner (NEA.snoc ws wsr) x.tail
+      Effect (Either (NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a))) a)
+    widgetStepRecords widgets =  tailRecM go { widgets: NEA.toArray widgets, wsrs: [] }
+      where
+        go rec = case (A.head rec.widgets) of
+          Just y -> do
+            etr <- toWidgetStepRec y
+            pure case etr of
+              Right a -> Done $ Right a
+              Left wsr -> Loop { widgets: next rec, wsrs: (A.snoc rec.wsrs  wsr)}
+          Nothing -> pure $ Done (Left $ fromMaybe fallback $ NEA.fromArray rec.wsrs)
+        next rec = fromMaybe [] (A.tail rec.widgets)
+        fallback = NEA.singleton { view: mempty, cont: never }
 
     merge ::
       forall v' a.
