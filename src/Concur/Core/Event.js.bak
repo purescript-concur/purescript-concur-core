@@ -1,0 +1,108 @@
+"use strict";
+
+exports.random = function() {
+  return "" + Math.floor(Math.random() * 1000);
+};
+
+/*
+// foreign import mkObserver ::
+//   forall a. Effect
+//     { push :: a -> Effect Unit
+//     , subscribe :: (a -> Effect Unit) -> Effect (Effect Unit)
+//     }
+exports.mkObserver = function() {
+    var saveda;
+    var callback;
+    return { push: function(a) {
+               return function() {
+                 if(callback) callback(a)();
+                 else saveda = a;
+               };
+             }
+           , subscribe: function(cb) {
+               return function() {
+                 if(saveda !== null && saveda !== undefined) {
+                   // TODO: Wrap this in a setTimeout???
+                   cb(saveda)();
+                   return function() {};
+                 } else {
+                   callback = cb;
+                   return function() {
+                     console.log("NO MORE CALLBACK", callback);
+                     callback = null;
+                   };
+                 }
+               };
+             }
+           };
+};
+
+
+// foreign import parIndex :: forall a. Array (Observer a) -> Observer ({i::Int, val::a})
+exports.parIndex = function(arr) {
+    return function(cb) {
+      return function() {
+        // Cancelers
+        var cancelers = [];
+        // register all callbacks
+        for(var i=0; i<arr.length;i++) {
+          var f = arr[i];
+          var c = f(function(val) {
+            return function() {
+              // Call the successful one
+              cb({i, val})();
+              // Cancel all others
+              console.log("THERE CAN BE ONLY ONE", cancelers);
+              for(var j=0; j<cancelers.length; j++) {
+                if (j !== i) cancelers[j]();
+              }
+              cancelers = [];
+            };
+          })();
+          // register canceler
+          cancelers.push(c);
+        };
+        return function() {
+         // cancel
+          for(var j=0; j<cancelers.length; j++) {
+            cancelers[j]();
+          }
+        };
+      };
+    };
+};
+
+// foreign import par :: forall a. Array (Observer a) -> Observer a
+exports.par = function(arr) {
+    return function(cb) {
+        return function() {
+            // Cancelers
+            var cancelers = [];
+            // register all callbacks
+            for(var i=0; i<arr.length;i++) {
+                var f = arr[i];
+                var c = f(function(val) {
+                  return function() {
+                    // Call the successful one
+                    cb(val)();
+                    // Cancel all others
+                    console.log("THERE CAN BE ONLY ONE", cancelers);
+                    for(var j=0; j<cancelers.length; j++) {
+                        if (j !== i) cancelers[j]();
+                    }
+                    cancelers = [];
+                  };
+                })();
+                // register canceler
+                cancelers.push(c);
+            };
+            return function() {
+              // cancel
+              for(var j=0; j<cancelers.length; j++) {
+                  cancelers[j]();
+              }
+            };
+        };
+    };
+};
+*/

@@ -11,10 +11,26 @@ import Effect.Ref as Ref
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual, shouldReturn)
 import Test.Utils (runWidgetAsAff)
+import Control.Parallel.Class (parallel, sequential)
+import Control.Plus (class Alt, class Plus, alt, empty)
 
 widgetSpec :: Spec Unit
 widgetSpec =
   describe "Widget" do
+    describe "Aff" do
+      it "Aff cancels running effects" do
+        ref <- liftEffect $ Ref.new ""
+        sequential $ alt
+          (parallel do
+             delay (Milliseconds 100.0)
+             liftEffect $ Ref.write "a" ref)
+          (parallel do
+             delay (Milliseconds 150.0)
+             liftEffect $ Ref.write "b" ref)
+        liftEffect (Ref.read ref) `shouldReturn` "a"
+        delay (Milliseconds 500.0)
+        liftEffect (Ref.read ref) `shouldReturn` "a"
+
     describe "orr" do
       it "should cancel running effects when the widget returns a value" do
         ref <- liftEffect $ Ref.new ""

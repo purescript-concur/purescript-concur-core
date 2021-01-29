@@ -8,19 +8,15 @@ where
 
 import Concur.Core.IsWidget (class IsWidget)
 import Concur.Core.LiftWidget (class LiftWidget, liftWidget)
-import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
-import Control.Monad.Free (Free, wrap, resume)
-import Control.Parallel.Class (parallel, sequential)
-import Control.Plus (alt)
-import Data.Either (Either(..))
-import Effect (Effect)
-import Effect.AVar (empty, tryPut) as EVar
-import Effect.Aff.AVar (take) as AVar
-import Effect.Aff.Class (liftAff)
-import Prelude (Unit, bind, map, pure, void, ($))
+import Concur.Core.Types (Widget(..), unWidget)
 
 -- Helpers for some very common use of unsafe blocking io
 
+-- TODO: THIS SHOULD NOT BE EXTRACTED OUT OF THE BACKEND CODE.
+-- EXTRACTING THIS OUT OF THE BACKEND IS CAUSING A RIGID mkNodeWidget TO BE USED
+-- THAT mkNodeWidget IF FORCING "spooky action at a distance". GET RID OF!
+
+{-
 -- | Construct a widget, by wrapping an existing widget in a view event
 mkNodeWidget ::
   forall a v.
@@ -33,27 +29,44 @@ mkNodeWidget mkView (Widget w) = Widget (mkNodeWidget' mkView w)
 mkNodeWidget' :: forall a v. ((a -> Effect Unit) -> v -> v) -> Free (WidgetStep v) a -> Free (WidgetStep v) a
 mkNodeWidget' mkView w = case resume w of
   Right a -> pure a
-  Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
+  Left x -> case x of
+    WidgetStepEff eff -> wrap $ WidgetStepEff do
       w' <- eff
       pure $ mkNodeWidget' mkView w'
-  Left (WidgetStepView wsr) -> wrap $ WidgetStepEff do
-      var <- EVar.empty
-      let eventHandler = (\a -> void (EVar.tryPut (pure a) var))
-      let cont' = sequential (alt (parallel (liftAff (AVar.take var)))
-                                  (parallel (map (mkNodeWidget' mkView) wsr.cont))
-                             )
-      pure $ wrap $ WidgetStepView
-        { view: mkView eventHandler wsr.view
-        , cont: cont'
-        }
+    WidgetStepView v w' -> do
+-}
+
+  -- Left (WidgetStepCont (Observer f)) -> wrap $ WidgetStepCont $ Observer \cb ->
+  --   f \w' -> cb (mkNodeWidgetInner cb w')
+
+  -- At this point, we don't have a wrapping observer. Create one
+  -- Left (WidgetStepView v a) -> wrap $ WidgetStepCont $ Observer \cb ->
+  --   ob <- mkObserver
+  --   pure $ wrap $ WidgetStepView
+  --     { view: mkView (ob.push <<< pure) wsr.view
+  --     , cont: par [ob.subscribe, wsr.cont]
+  --     }
+
+  -- where
+    -- Special case, view wrapped inside callback
+    -- mkNodeWidgetInner cb w' = case resume w' of
+    --   Right a -> pure a
+    --   Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
+    --     w'' <- eff
+    --     pure $ mkNodeWidgetInner cb w''
+    --   Left (WidgetStepView v w'') -> wrap $ WidgetStepView (mkView cb v) (mkNodeWidget' mkView w'')
+
+{-
+
 -- | Construct a widget with just props
 mkLeafWidget ::
   forall a v.
   ((a -> Effect Unit) -> v) ->
   Widget v a
 mkLeafWidget mkView = Widget $ wrap $ WidgetStepEff do
-  var <- EVar.empty
+  ob <- mkObserver
   pure $ wrap $ WidgetStepView
-    { view: mkView (\a -> void (EVar.tryPut (pure a) var))
-    , cont: liftAff (AVar.take var)
+    { view: mkView (ob.push <<< pure)
+    , cont: ob.subscribe
     }
+-}

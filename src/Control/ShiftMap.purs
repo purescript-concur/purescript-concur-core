@@ -10,6 +10,27 @@ import Control.Monad.Writer.Trans (WriterT(..))
 import Data.Either (Either(..))
 import Data.Tuple (Tuple(..))
 
+-- Say you have a function `f` that accepts a value `m a`.
+-- Now you pass it a value `m b` instead. We need to figure
+-- out the various ways in which we can still get the function to
+-- work, by either constraining things, or by passing extra information.
+--
+-- Let's consider functions which combine the passed in value with other
+-- values in some way. For example, if it's a semigroup, then it can
+-- append the `m a` with other `m a`s.
+--
+-- Now that we actually passed in a `m b`, it's not possible to combine it.
+-- But, what if we have a way to convert a `m a` into an `m b`. Then the
+-- function can just convert its internal `m a` into an `m b` and combine them.
+-- For this, it's enough to have an `a -> b` transformation and `map` it
+-- over the `m a`.
+--
+-- This class of functions is captured by the `shiftMap` class.
+--
+-- For Concur, the UIs are monoidal, and shiftMap is used to apply
+-- UI transformations, as long as they only do monoidal operations,
+-- to things other than raw widgets.
+
 -- | Avoiding monad-control for as long as possible
 class ShiftMap s t where
   shiftMap :: forall a. (forall b. (a -> b) -> s b -> s b) -> t a -> t a

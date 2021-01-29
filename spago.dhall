@@ -5,12 +5,9 @@ You can edit this file as you like.
 { name =
     "concur-core"
 , dependencies =
-    [ "aff"
-    , "arrays"
-    , "avar"
+    [ "arrays"
     , "console"
     , "foldable-traversable"
-    , "free"
     , "nonempty"
     , "profunctor-lenses"
     , "tailrec"

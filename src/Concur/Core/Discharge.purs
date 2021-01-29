@@ -2,47 +2,49 @@ module Concur.Core.Discharge where
 
 import Prelude
 
-import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
-import Control.Monad.Free (resume, wrap)
+-- import Concur.Core.Types (Widget(..), WidgetStep(..))
+-- import Control.Monad.Free (resume)
 import Data.Either (Either(..))
-import Data.Tuple (Tuple(..))
+import Data.Maybe (Maybe(..))
 import Effect (Effect)
-import Effect.Aff (runAff_)
 import Effect.Exception (Error)
 
--- Widget discharge strategies
--- | Discharge a widget.
--- | 1. Runs the Effect action
--- | 2. Forks the Aff action
--- | 3. Extracts and returns the view
-discharge ::
-  forall a v.
-  Monoid v =>
-  (Either Error (Widget v a) -> Effect Unit) ->
-  Widget v a ->
-  Effect v
-discharge handler (Widget w) = case resume w of
-  Right _ -> pure mempty
-  Left (WidgetStepEff eff) -> do
-      w' <- eff
-      discharge handler (Widget w')
-  Left (WidgetStepView ws) -> do
-      runAff_ (handler <<< map Widget) ws.cont
-      pure ws.view
+-- -- Widget discharge strategies
+-- -- | Discharge a widget.
+-- -- | 1. Runs the Effect action
+-- -- | 2. Forks the Aff action
+-- -- | 3. Extracts and returns the view
+-- discharge ::
+--   forall a v.
+--   Monoid v =>
+--   (Either Error (Widget v a) -> Effect Unit) ->
+--   Widget v a ->
+--   Effect (Maybe v)
+-- discharge handler (Widget w) = case resume w of
+--   Right _ -> pure Nothing
+--   Left x -> case x of
+--     WidgetStepView f ->
+--       f \y -> handler (Right (Widget y))
 
+{-
 -- | Discharge only the top level blocking effect of a widget (if any) to get access to the view
--- | Returns the view, and the remaining widget
+-- | Returns the view if any, and the remaining widget, which could be the same widget.
 dischargePartialEffect ::
   forall a v.
   Monoid v =>
   Widget v a ->
-  Effect (Tuple (Widget v a) v)
+  Effect (Tuple (Widget v a) (Maybe v))
 dischargePartialEffect w = case resume (unWidget w) of
-  Right _ -> pure (Tuple w mempty)
-  Left (WidgetStepEff eff) -> do
+  Right _ -> pure (Tuple w Nothing)
+  Left x -> case x of
+    WidgetStepEff eff -> do
       w' <- eff
       dischargePartialEffect (Widget w')
-  Left (WidgetStepView ws) -> pure (Tuple (Widget (wrap (WidgetStepView ws))) ws.view)
+    -- WidgetStepCont _ -> pure (Tuple w Nothing)
+    WidgetStepStuck -> pure (Tuple w Nothing)
+    WidgetStepView f ->
+      map (Just <<< fromMaybe v) <$> dischargePartialEffect (Widget w')
+-}
 
 {-
 -- | Discharge a widget, forces async resolution of the continuation.
