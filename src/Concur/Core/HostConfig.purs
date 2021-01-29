@@ -1,6 +1,5 @@
 module Concur.Core.HostConfig where
 
-import Data.Unit (Unit)
 
 data Props
 

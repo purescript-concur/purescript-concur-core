@@ -1,13 +1,8 @@
 module Concur.Core.Discharge where
 
-import Prelude
 
 -- import Concur.Core.Types (Widget(..), WidgetStep(..))
 -- import Control.Monad.Free (resume)
-import Data.Either (Either(..))
-import Data.Maybe (Maybe(..))
-import Effect (Effect)
-import Effect.Exception (Error)
 
 -- -- Widget discharge strategies
 -- -- | Discharge a widget.
