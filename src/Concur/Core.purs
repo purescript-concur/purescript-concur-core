@@ -36,11 +36,11 @@ mkNodeWidget' mkView w = case resume w of
     WidgetStepView v w' -> do
 -}
 
-  -- Left (WidgetStepCont (Observer f)) -> wrap $ WidgetStepCont $ Observer \cb ->
+  -- Left (WidgetStepCont (Event f)) -> wrap $ WidgetStepCont $ Event \cb ->
   --   f \w' -> cb (mkNodeWidgetInner cb w')
 
   -- At this point, we don't have a wrapping observer. Create one
-  -- Left (WidgetStepView v a) -> wrap $ WidgetStepCont $ Observer \cb ->
+  -- Left (WidgetStepView v a) -> wrap $ WidgetStepCont $ Event \cb ->
   --   ob <- mkObserver
   --   pure $ wrap $ WidgetStepView
   --     { view: mkView (ob.push <<< pure) wsr.view

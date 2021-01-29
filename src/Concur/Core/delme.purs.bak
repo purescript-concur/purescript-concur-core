@@ -2,7 +2,7 @@ module Concur.Core.Types where
 
 import Prelude
 
-import Concur.Core.Event (Observer(..), parIndex)
+import Concur.Core.Event (Event(..), parIndex)
 import Control.Alternative (class Alternative)
 import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
 import Control.Monad.Rec.Class (class MonadRec)
@@ -21,7 +21,7 @@ import Effect.Class (class MonadEffect)
 
 data WidgetStep v a
   = WidgetStepSync (Effect a)
-  | WidgetStepAsync (Observer a)
+  | WidgetStepAsync (Event a)
   | WidgetStepView ((a -> Effect Unit) -> v)
   | WidgetStepHalt
 
@@ -84,14 +84,14 @@ instance widgetMultiAlternative ::
     -- combineInnerAsyncViews ::
     --   forall v' a.
     --   Monoid v' =>
-    --   NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+    --   NonEmptyArray (Event (Free (WidgetStep v') a)) ->
     --   Array (Widget v' a) ->
     --   Free (WidgetStep v') a
 
     combineInnerAsync ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      NonEmptyArray (Event (Free (WidgetStep v') a)) ->
       Array (Widget v' a) ->
       Free (WidgetStep v') a
     combineInnerAsync ws freeArr = case NEA.fromArray freeArr of
@@ -102,7 +102,7 @@ instance widgetMultiAlternative ::
     combineInnerAsync1 ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      NonEmptyArray (Event (Free (WidgetStep v') a)) ->
       NonEmptyArray (Widget v' a) ->
       Free (WidgetStep v') a
     combineInnerAsync1 ws freeNarr =
@@ -119,21 +119,21 @@ instance widgetMultiAlternative ::
     combineAsyncs ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
+      NonEmptyArray (Event (Free (WidgetStep v') a)) ->
       Free (WidgetStep v') a
     combineAsyncs ws = wrap $ WidgetStepAsync $ merge ws
 
     merge ::
       forall v' a.
       Monoid v' =>
-      NonEmptyArray (Observer (Free (WidgetStep v') a)) ->
-      Observer (Free (WidgetStep v') a)
+      NonEmptyArray (Event (Free (WidgetStep v') a)) ->
+      Event (Free (WidgetStep v') a)
     merge ws = map func obs
       where
       wsm = map (Widget <<< wrap <<< WidgetStepAsync) ws
 
       -- TODO: We know the array is non-empty. We need something like foldl1WithIndex.
-      -- TODO: All the Observer in ws is already discharged. Use a more efficient way than combine to process it
+      -- TODO: All the Event in ws is already discharged. Use a more efficient way than combine to process it
       -- TODO: Also, more importantly, we would like to not have to cancel running fibers unless one of them returns a result
       -- MAP OVER OBSERVER. SEE IF WE CAN OPTIMISE THIS (COYONEDA).
       obs = parIndex (NEA.toArray ws)
@@ -208,7 +208,7 @@ effAction = Widget <<< liftF <<< WidgetStepSync
 -- Async aff
 affAction ::
   forall a v.
-  Observer a ->
+  Event a ->
   Widget v a
 affAction = Widget <<< liftF <<< WidgetStepAsync
 
@@ -217,7 +217,7 @@ asyncAction
   :: forall v a
   .  ((a -> Effect Unit) -> Effect (Effect Unit))
   -> Widget v a
-asyncAction handler = affAction (Observer handler)
+asyncAction handler = affAction (Event handler)
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
   liftEffect = effAction

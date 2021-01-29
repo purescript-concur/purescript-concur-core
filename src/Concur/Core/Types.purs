@@ -21,10 +21,13 @@ import Effect.Uncurried (EffectFn1, mkEffectFn1, runEffectFn1)
 import Unsafe.Coerce (unsafeCoerce)
 
 data Change a
+
 class Patch a d where
   patch :: a -> d -> a
+
 fromChange :: forall a d. Patch a d => Change a -> d
 fromChange = unsafeCoerce
+
 toChange :: forall a d. Patch a d => d -> Change a
 toChange = unsafeCoerce
 
@@ -192,7 +195,7 @@ affAction = Widget
 --   :: forall v a
 --   .  ((a -> Effect Unit) -> Effect (Effect Unit))
 --   -> Widget v a
--- asyncAction handler = affAction (Observer handler)
+-- asyncAction handler = affAction (Event handler)
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
   liftEffect = effAction

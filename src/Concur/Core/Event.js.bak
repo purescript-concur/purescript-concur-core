@@ -38,7 +38,7 @@ exports.mkObserver = function() {
 };
 
 
-// foreign import parIndex :: forall a. Array (Observer a) -> Observer ({i::Int, val::a})
+// foreign import parIndex :: forall a. Array (Event a) -> Event ({i::Int, val::a})
 exports.parIndex = function(arr) {
     return function(cb) {
       return function() {
@@ -72,7 +72,7 @@ exports.parIndex = function(arr) {
     };
 };
 
-// foreign import par :: forall a. Array (Observer a) -> Observer a
+// foreign import par :: forall a. Array (Event a) -> Event a
 exports.par = function(arr) {
     return function(cb) {
         return function() {
