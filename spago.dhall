@@ -6,6 +6,7 @@ You can edit this file as you like.
     "concur-core"
 , dependencies =
     [ "aff"
+    , "aff-bus"
     , "arrays"
     , "avar"
     , "console"

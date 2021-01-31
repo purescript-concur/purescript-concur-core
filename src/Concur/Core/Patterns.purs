@@ -1,15 +1,31 @@
-module Concur.Core.Patterns where
+module Concur.Core.Patterns
+( loopState
+, retryUntil
+, retryUntilLoop
+, tea
+, remoteWidget
+, forkAction
+, forkActionState
+, Wire
+, mapWire
+, local
+, with
+, send
+) where
 
 import Prelude
 
 import Control.Alt (class Alt)
+import Control.Monad.Rec.Class (class MonadRec, forever)
 import Control.Plus (class Plus, empty, (<|>))
 import Data.Either (Either(..), either)
 import Data.Lens (Lens')
 import Data.Lens as L
+import Data.Newtype (class Newtype, un)
 import Data.Tuple (Tuple(..))
 import Effect.AVar as EVar
 import Effect.Aff.AVar as AVar
+import Effect.Aff.Bus as ABus
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (class MonadEffect, liftEffect)
 
@@ -98,26 +114,49 @@ forkActionState axn render st = forkAction axn (go st)
 -- WORKING WITH LOCAL ENVIRONMENTS
 
 -- | A wire can send values up into a local environment
-type Wire m a = { value :: a, send :: a -> m Void, receive :: m a }
+newtype Wire m a = Wire { value :: m a, send :: a -> m Void, receive :: m a }
+derive instance newtypeWire :: Newtype (Wire m a) _
 
 -- | Map a Lens over a Wire
-mapWire :: forall m s a. Functor m => Lens' s a -> Wire m s -> Wire m a
+mapWire :: forall m s a. Alt m => MonadEffect m => MonadAff m => Plus m => Lens' s a -> Wire m s -> Wire m a
 mapWire lens wire =
-  { value: L.view lens wire.value
-  , send: \a -> wire.send $ L.set lens a wire.value
-  , receive: map (L.view lens) wire.receive
-  }
+  let wirerec = un Wire wire
+  in Wire { value: L.view lens <$> wirerec.value
+          , send: \a -> wirerec.value >>= (wirerec.send <<< L.set lens a)
+          , receive: L.view lens <$> wirerec.receive
+          }
 
 -- | Setup a local environment with a wire
-local :: forall m r a. Alt m => MonadEffect m => MonadAff m => Plus m => a -> (Wire m a -> m r) -> m r
-local a f = do
-  var <- liftEffect EVar.empty
-  go { value: a
-     , send: \a' -> liftAff (AVar.put a' var) *> empty
-     , receive: liftAff $ AVar.take var
-     }
+local :: forall m r a. Alt m => MonadRec m => MonadEffect m => MonadAff m => Plus m => a -> (Wire m a -> m r) -> m r
+local ainit f = do
+  -- The current value
+  currentVal <- liftEffect $ EVar.new ainit
+  -- The Bus used to send updates to children
+  toChildBus <- ABus.make
+  -- The Aff a child can send updates to
+  fromChild <- liftEffect EVar.empty
+  -- Construct the wire
+  let wire = Wire
+       { value: liftAff $ AVar.read currentVal
+       , send: \a -> liftAff (AVar.put a fromChild) *> empty
+       , receive: liftAff $ ABus.read toChildBus
+       }
+  -- `local` coordinates between the two channels
+  let sendToChildren a = liftAff do forcePut a currentVal *> ABus.write a toChildBus
+  let getFromAnyChild = liftAff $ AVar.take fromChild
+  f wire <|> forever do getFromAnyChild >>= sendToChildren
+
+forcePut :: forall m a. MonadAff m => a -> EVar.AVar a -> m Unit
+forcePut a var = liftAff $ AVar.tryTake var *> AVar.put a var
+
+send :: forall m a. MonadEffect m => MonadAff m => Plus m => Wire m a -> a -> m Void
+send w = (un Wire w).send
+
+with :: forall m r a. MonadEffect m => MonadAff m => Plus m => Wire m a -> (a -> m r) -> m r
+with wire f = do
+  val <- (un Wire wire).value
+  go val
   where
-  updateWire wire a' = wire {value=a'}
-  go wire = do
-    res <- (Left <$> f wire) <|> (Right <$> wire.receive)
-    either pure (go <<< updateWire wire) res
+  go a = do
+    res <- (Left <$> f a) <|> (Right <$> (un Wire wire).receive)
+    either pure go res
