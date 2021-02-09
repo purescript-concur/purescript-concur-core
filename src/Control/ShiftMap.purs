@@ -11,6 +11,8 @@ import Data.Either (Either(..))
 import Data.Tuple (Tuple(..))
 
 -- | Avoiding monad-control for as long as possible
+-- | (convert functions on widgets to functions on transformer stacks
+-- | wrapping widgets).
 class ShiftMap s t where
   shiftMap :: forall a. (forall b. (a -> b) -> s b -> s b) -> t a -> t a
 
