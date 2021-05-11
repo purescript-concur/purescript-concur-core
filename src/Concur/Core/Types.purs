@@ -2,71 +2,103 @@ module Concur.Core.Types where
 
 import Prelude
 
-import Control.Alternative (class Alternative)
-import Control.Monad.Free (Free, hoistFree, liftF, resume, wrap)
-import Control.Monad.Rec.Class (class MonadRec)
-import Control.MultiAlternative (class MultiAlternative, orr)
-import Control.Parallel.Class (parallel, sequential)
-import Control.Plus (class Alt, class Plus, alt, empty)
 import Control.ShiftMap (class ShiftMap)
 import Data.Array as A
-import Data.Array.NonEmpty (NonEmptyArray)
-import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
-import Data.FoldableWithIndex (foldlWithIndex, foldrWithIndex)
-import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
-import Data.Semigroup.Foldable (foldMap1)
-import Data.Tuple (Tuple(..))
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Newtype (class Newtype)
+import Data.Traversable (sequence, for)
+import Data.FoldableWithIndex (traverseWithIndex_)
 import Effect (Effect)
-import Effect.AVar (empty, tryPut, tryTake) as EVar
-import Effect.Aff (Aff, effectCanceler, makeAff, never, runAff_)
-import Effect.Aff.AVar (take) as AVar
-import Effect.Aff.Class (class MonadAff)
-import Effect.Class (class MonadEffect)
+import Effect.Aff (Aff, Fiber, runAff_, runAff, killFiber)
 import Effect.Console (log)
-import Effect.Exception (Error)
+import Effect.Aff.Class (class MonadAff)
+import Effect.Exception (error)
+import Effect.Ref as Ref
+import Effect.Ref (Ref)
+import Effect.Timer (TimeoutId, clearTimeout, setTimeout)
+import Control.Alternative (class Alternative)
+import Control.MultiAlternative (class MultiAlternative, orr)
+import Control.Plus (class Alt, class Plus, empty)
+import Effect.Class (class MonadEffect)
 
-type WidgetStepRecord v a
-  = {view :: v, cont :: Aff a}
+-- | Callback -> Effect Canceler (returns the unused effect)
+-- | Canceling will *always* have some leftover effect, else it would have ended already
+-- | TODO: Have a way to check if the callback is finished (i.e. will never be called again)
+-- |       One option is to have a cb = (Either partResult a -> Effect Unit)
+newtype Callback a = Callback (Callback' a)
+type Callback' a = (a -> Effect Unit) -> Effect (Effect (Callback a))
 
-data WidgetStep v a
-  = WidgetStepEff (Effect a)
-  | WidgetStepView (WidgetStepRecord v a)
+mkCallback :: forall a. Callback' a -> Callback a
+mkCallback = Callback
 
--- unWidgetStep ::
---   forall v a.
---   WidgetStep v a ->
---   Either (Effect a) (WidgetStepRecord v a)
--- unWidgetStep (WidgetStep x) = x
+runCallback :: forall a. Callback a -> Callback' a
+runCallback (Callback f) = f
 
--- derive instance widgetStepFunctor :: Functor (WidgetStep v)
-instance functorWidgetStep :: Functor (WidgetStep v) where
-  map f (WidgetStepEff e) = WidgetStepEff (map f e)
-  map f (WidgetStepView w) = WidgetStepView (w { cont = map f w.cont })
+instance functorCallback :: Functor Callback where
+  map f g = mkCallback \cb -> map (map f) <$> runCallback g (cb <<< f)
 
-displayStep :: forall a v. v -> WidgetStep v a
-displayStep v = WidgetStepView { view: v, cont: never }
+display :: forall a v. v -> Widget v a
+display v = mkWidget \cb -> do
+  cb (Left v)
+  pure (pure (unWid (display v)))
 
-newtype Widget v a
-  = Widget (Free (WidgetStep v) a)
+-- | A callback that will never be resolved
+never :: forall a. Callback a
+never = mkCallback \_cb -> pure (pure never)
 
-unWidget :: forall v a. Widget v a -> Free (WidgetStep v) a
-unWidget (Widget w) = w
-
-derive newtype instance widgetFunctor :: Functor (Widget v)
-
-derive newtype instance widgetBind :: Bind (Widget v)
-
-derive newtype instance widgetApplicative :: Applicative (Widget v)
-
-derive newtype instance widgetApply :: Apply (Widget v)
-
-instance widgetMonad :: Monad (Widget v)
-
-derive newtype instance widgetMonadRec :: MonadRec (Widget v)
+-- NOTE: We currently have no monadic instance for callbacks
+-- Remember: The monadic instance *must* agree with the applicative instance
 
 instance widgetShiftMap :: ShiftMap (Widget v) (Widget v) where
   shiftMap f = f identity
+
+-- A Widget is basically a callback that returns a view or a return value
+newtype Widget v a = Widget (Callback (Either v a))
+derive instance functorWidget :: Functor (Widget v)
+instance newtypeWidget :: Newtype (Widget v a) (Callback (Either v a)) where
+   unwrap = unWid
+   wrap = mkWidget <<< runCallback
+
+unWid :: forall v a. Widget v a -> Callback (Either v a)
+unWid (Widget w) = w
+
+runWidget :: forall v a. Widget v a -> Callback' (Either v a)
+runWidget (Widget (Callback e)) = e
+
+mkWidget :: forall v a. Callback' (Either v a) -> Widget v a
+mkWidget e = Widget (Callback e)
+
+instance applyWidget :: Apply (Widget v) where
+  apply = ap
+
+instance widgetMonad :: Monad (Widget v)
+
+instance applicativeWidget :: Applicative (Widget v) where
+  pure a = mkWidget \cb -> cb (Right a) $> pure never
+
+instance bindWidget :: Bind (Widget v) where
+  bind m f = mkWidget \cb -> do
+    let cancelerRef = Ref.new Nothing
+    r <- cancelerRef
+    -- CancelerRef starts out as a canceler for A, then becomes canceler for B
+    cancelerA <- runWidget m \res -> do
+      case res of
+        Left v -> cb (Left v)
+        Right a -> do
+          -- After A has been resolved, the canceler just becomes a canceler for B
+          -- TODO: Should cancelerA also be cancelled here?
+          --   Depends on what the ideal API contract is. INVESTIGATE.
+          cancelerB <- runWidget (f a) cb
+          Ref.write (Just cancelerB) r
+
+      -- The initial canceler just cancels A, and then binds the remaining widget with B
+    val <- Ref.read r
+    pure $ case val of
+      Just canceler -> canceler
+      Nothing -> do
+        c <- cancelerA
+        pure (unWid (bind (Widget c) f))
 
 -- Util
 flipEither ::
@@ -80,92 +112,35 @@ instance widgetMultiAlternative ::
   ( Monoid v
   ) =>
   MultiAlternative (Widget v) where
-  orr wss = case NEA.fromArray wss of
-    Just wsne -> Widget $ combine $ map unWidget wsne
-    Nothing -> empty
+  orr :: forall v a. Monoid v => Array (Widget v a) -> Widget v a
+  orr widgets = mkWidget \cb -> do
+    cRef <- init widgets (pure never)
+    wRef <- init widgets (Left mempty)
+    traverseWithIndex_ (subscribe cb wRef cRef) widgets
+    cancelers <- Ref.read cRef
+    wi <- sequence cancelers
+    pure $ pure (unWid (orr $ Widget <$> wi))
     where
-    combine ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (Free (WidgetStep v') a) ->
-      Free (WidgetStep v') a
-    combine wfs =
-      let x = NEA.uncons wfs
-      in case resume x.head of
-        Right a -> pure a
-        Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
-            w <- eff
-            pure $ combine $ NEA.cons' w x.tail
-        Left (WidgetStepView wsr) -> combineInner (NEA.singleton wsr) x.tail
-
-    combineInner ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      Array (Free (WidgetStep v') a) ->
-      Free (WidgetStep v') a
-    combineInner ws freeArr = case NEA.fromArray freeArr of
-      -- We have collected all the inner views/conts
-      Nothing -> combineViewsConts ws --wrap $ WidgetStep $ Right wsr
-      Just freeNarr -> combineInner1 ws freeNarr
-
-    combineViewsConts ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      Free (WidgetStep v') a
-    combineViewsConts ws = wrap $ WidgetStepView
-      { view: foldMap1 _.view ws
-      , cont: merge ws (map _.cont ws)
-      }
-
-    combineInner1 ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      NonEmptyArray (Free (WidgetStep v') a) ->
-      Free (WidgetStep v') a
-    combineInner1 ws freeNarr =
-      let x = NEA.uncons freeNarr
-      in case resume x.head of
-        Right a -> pure a
-        Left (WidgetStepEff eff) -> wrap $ WidgetStepEff do
-            w <- eff
-            pure $ combineInner1 ws $ NEA.cons' w x.tail
-        Left (WidgetStepView wsr) -> combineInner (NEA.snoc ws wsr) x.tail
-
-    merge ::
-      forall v' a.
-      Monoid v' =>
-      NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      NonEmptyArray (Aff (Free (WidgetStep v') a)) ->
-      Aff (Free (WidgetStep v') a)
-    merge ws wscs = do
-      let wsm = map (wrap <<< WidgetStepView) ws
-      -- TODO: We know the array is non-empty. We need something like foldl1WithIndex.
-      Tuple i e <- sequential (foldlWithIndex (\i r w ->
-        alt (parallel (map (Tuple i) w)) r) empty wscs)
-      -- TODO: All the Aff in ws is already discharged. Use a more efficient way than combine to process it
-      -- TODO: Also, more importantly, we would like to not have to cancel running fibers unless one of them returns a result
-      pure $ combine (fromMaybe wsm (NEA.updateAt i e wsm))
-
-
--- | Run multiple widgets in parallel until *all* finish, and collect their outputs
--- | Contrast with `orr`
--- TODO: Performance? Don't orr with `empty`.
-andd ::
-  forall v a.
-  Monoid v =>
-  Array (Widget v a) ->
-  Widget v (Array a)
-andd ws = do
-  Tuple i e <- foldrWithIndex (\i w r -> alt (map (Tuple i) w) r) empty ws
-  let ws' = fromMaybe ws $ A.deleteAt i ws
-  if A.length ws' <= 0
-    then pure [e]
-    else do
-      rest <- andd ws'
-      pure $ fromMaybe [] $ A.insertAt i e rest
+      init :: forall a b. Array (Widget v a) -> b -> Effect (Ref (Array b))
+      init ws x = Ref.new $ A.replicate (A.length ws) x
+      subscribe callback widgetsRef cancelersRef i w = do
+        canceler <- runWidget w \res -> do
+          es <- Ref.modify (\s -> fromMaybe s $ A.updateAt i res s) widgetsRef
+          go callback mempty es cancelersRef
+        void $ Ref.modify (\s -> fromMaybe s $ A.updateAt i canceler s) cancelersRef
+      go callback v es cs = case A.uncons es of
+        Just { head, tail } -> case head of
+          Left va -> go callback (v <> va) tail cs
+          Right a -> do
+            callback (Right a)
+            -- Runs all cancelers after the callback returns a value
+            -- I feel like I am not using this the way it was intended
+            -- But it works, in the case of competing Affs, for example.
+            cancelers <- Ref.read cs
+            void $ for cancelers \n -> do
+              inner <- n
+              void $ runCallback inner \_ -> pure unit
+        Nothing -> callback (Left v)
 
 instance widgetSemigroup :: (Monoid v) => Semigroup (Widget v a) where
   append w1 w2 = orr [w1, w2]
@@ -193,53 +168,85 @@ pulse ::
   Widget v Unit
 pulse = effAction (pure unit)
 
-mapView :: forall a v1 v2. (v1 -> v2) -> Widget v1 a -> Widget v2 a
-mapView f (Widget w) = Widget (hoistFree (mapViewStep f) w)
-
-mapViewStep :: forall v1 v2 a. (v1 -> v2) -> WidgetStep v1 a -> WidgetStep v2 a
-mapViewStep f (WidgetStepEff e) = WidgetStepEff e
-mapViewStep f (WidgetStepView ws) = WidgetStepView ( ws { view = f ws.view })
-
-display :: forall a v. v -> Widget v a
-display v = Widget (liftF (displayStep v))
-
--- Sync eff
 effAction ::
   forall a v.
   Effect a ->
   Widget v a
-effAction = Widget <<< liftF <<< WidgetStepEff
+effAction a = mkWidget \cb -> do
+  inner <- a
+  cb (Right inner)
+  pure (pure (unWid $ effAction a))
 
--- Async aff
+-- Sync eff
+
+killAff ::
+  forall a v.
+  v ->
+  Fiber Unit ->
+  Callback (Either v a)
+killAff v f = mkCallback \cb -> do
+  cb (Left v)
+  let aff = killFiber (error "cancelling aff") f
+  runAff_ (handler cb) aff
+  pure (pure never)
+  where
+    handler cb (Right r) = pure unit
+    handler cb (Left _) = pure unit
+
 affAction ::
   forall a v.
   v ->
   Aff a ->
   Widget v a
-affAction v aff = Widget $ wrap $ WidgetStepEff do
-  var <- EVar.empty
-  runAff_ (handler var) aff
-  -- Detect synchronous resolution
-  ma <- EVar.tryTake var
-  pure case ma of
-    Just a -> pure a
-    Nothing -> liftF $ WidgetStepView { view: v, cont: AVar.take var }
+affAction v aff = mkWidget \cb -> do
+  cb (Left v)
+  fiber <- runAff (handler cb) aff
+  pure (pure (killAff v fiber))
   where
-  -- TODO: allow client code to handle aff failures
-  handler _ (Left e) = log ("Aff failed - " <> show e)
-  handler var (Right a) = void (EVar.tryPut a var)
-
--- Async callback
-asyncAction ::
-  forall v a.
-  v ->
-  ((Either Error a -> Effect Unit) -> Effect (Effect Unit)) ->
-  Widget v a
-asyncAction v handler = affAction v (makeAff (map effectCanceler <<< handler))
+    handler cb (Right r) = cb (Right r)
+    handler cb (Left _) = log "error calling aff"
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
   liftEffect = effAction
 
 instance widgetMonadAff :: (Monoid v) => MonadAff (Widget v) where
   liftAff = affAction mempty
-    -- Widget $ liftF $ WidgetStep $ Right { view: mempty, cont: aff }
+
+data DebounceStatus = Initial | Waiting TimeoutId | Elapsed
+
+debounced ::
+  forall a v.
+  Int ->
+  Widget v a ->
+  Widget v a
+debounced timeout w =
+  let idRef = Ref.new Initial in do
+  mkWidget \cb -> do
+    idRefInner <- idRef
+    runWidget w (hdlr cb timeout idRefInner)
+  where
+    hdlr cb time ref = \res -> case res of
+      Left l -> cb (Left l)
+      Right r -> debounceInner timeout cb ref r
+
+debounceInner ::
+  forall a v.
+  Int ->
+  (Either v a -> Effect Unit) ->
+  Ref DebounceStatus ->
+  a ->
+  Effect Unit
+debounceInner time callback ref a = do
+  id <- Ref.read ref
+  case id of
+    Initial -> schedule callback time ref a
+    Waiting tid -> do
+      clearTimeout tid
+      schedule callback time ref a
+    Elapsed -> callback (Right a)
+  where
+    schedule cb t r v = do
+      tid <- setTimeout time do
+        Ref.write Elapsed ref
+        debounceInner t cb r v
+      Ref.write (Waiting tid) ref
