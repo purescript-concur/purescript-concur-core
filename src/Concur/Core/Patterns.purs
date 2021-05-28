@@ -6,7 +6,7 @@ module Concur.Core.Patterns
 , remoteWidget
 , forkAction
 , forkActionState
-, Wire
+, Wire(..)
 , mapWire
 , local
 , with

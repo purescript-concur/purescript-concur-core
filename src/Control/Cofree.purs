@@ -214,7 +214,7 @@ instance traversableCofree :: (Traversable f) => Traversable (Cofree f) where
 instance extendCofree :: (Functor f) => Extend (Cofree f) where
   extend f = loop
     where
-    loop (Cofree fa) = Cofree ((\(Tuple a b) ->
+    loop (Cofree fa) = Cofree ((\ (Tuple _ b) ->
       Tuple (f (Cofree fa)) (loop <$> b)) <$> fa)
 
 instance comonadCofree :: (Functor f) => Comonad (Cofree f) where
@@ -255,4 +255,3 @@ instance shiftMapCofree :: Monoid v => ShiftMap (Widget v) (Cofree (Widget v)) w
 
 mfix :: forall f a. (Lazy a -> Cofree f a) -> Cofree f a
 mfix f = Z.fix \res -> f $ lazyHead res
-

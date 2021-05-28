@@ -197,7 +197,7 @@ mapView :: forall a v1 v2. (v1 -> v2) -> Widget v1 a -> Widget v2 a
 mapView f (Widget w) = Widget (hoistFree (mapViewStep f) w)
 
 mapViewStep :: forall v1 v2 a. (v1 -> v2) -> WidgetStep v1 a -> WidgetStep v2 a
-mapViewStep f (WidgetStepEff e) = WidgetStepEff e
+mapViewStep _ (WidgetStepEff e) = WidgetStepEff e
 mapViewStep f (WidgetStepView ws) = WidgetStepView ( ws { view = f ws.view })
 
 display :: forall a v. v -> Widget v a
