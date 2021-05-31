@@ -116,28 +116,36 @@ instance widgetMultiAlternative ::
   orr widgets = mkWidget \cb -> do
     cRef <- init widgets (pure never)
     wRef <- init widgets (Left mempty)
-    traverseWithIndex_ (subscribe cb wRef cRef) widgets
+    subscribed <- Ref.new false
+    traverseWithIndex_ (subscribe subscribed cb wRef cRef) widgets
+    Ref.write true subscribed
+    es <- Ref.read wRef
+    cs <- Ref.read cRef
+    step cb mempty es cs
     cancelers <- Ref.read cRef
     wi <- sequence cancelers
     pure $ pure (unWid (orr $ Widget <$> wi))
     where
       init :: forall a b. Array (Widget v a) -> b -> Effect (Ref (Array b))
       init ws x = Ref.new $ A.replicate (A.length ws) x
-      subscribe callback widgetsRef cancelersRef i w = do
+      subscribe ss callback widgetsRef cancelersRef i w = do
         canceler <- runWidget w \res -> do
           es <- Ref.modify (\s -> fromMaybe s $ A.updateAt i res s) widgetsRef
-          go callback mempty es cancelersRef
+          cs <- Ref.read cancelersRef
+          subs <- Ref.read ss
+          case subs of
+             true  -> step callback mempty es cs
+             false -> pure unit
         void $ Ref.modify (\s -> fromMaybe s $ A.updateAt i canceler s) cancelersRef
-      go callback v es cs = case A.uncons es of
+      step callback v es cs = case A.uncons es of
         Just { head, tail } -> case head of
-          Left va -> go callback (v <> va) tail cs
+          Left va -> step callback (v <> va) tail cs
           Right a -> do
             callback (Right a)
             -- Runs all cancelers after the callback returns a value
             -- I feel like I am not using this the way it was intended
             -- But it works, in the case of competing Affs, for example.
-            cancelers <- Ref.read cs
-            void $ for cancelers \n -> do
+            void $ for cs \n -> do
               inner <- n
               void $ runCallback inner \_ -> pure unit
         Nothing -> callback (Left v)
