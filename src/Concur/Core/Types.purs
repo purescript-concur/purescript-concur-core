@@ -2,13 +2,14 @@ module Concur.Core.Types where
 
 import Prelude
 
+import Control.MonadFix (mfix)
 import Control.ShiftMap (class ShiftMap)
 import Data.Array as A
 import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
-import Data.Traversable (sequence, for)
-import Data.FoldableWithIndex (traverseWithIndex_)
+import Data.Traversable (sequence, traverse_)
+import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Effect.Aff (Aff, Fiber, runAff_, runAff, killFiber)
 import Effect.Console (log)
@@ -29,6 +30,13 @@ import Effect.Class (class MonadEffect)
 newtype Callback a = Callback (Callback' a)
 type Callback' a = (a -> Effect Unit) -> Effect (Effect (Callback a))
 
+data Result v a = View v | Completed a | Partial a
+
+instance functorResult :: Functor (Result v) where
+  map f (View v) = View v
+  map f (Completed a) = Completed (f a)
+  map f (Partial a) = Partial (f a)
+
 mkCallback :: forall a. Callback' a -> Callback a
 mkCallback = Callback
 
@@ -40,7 +48,7 @@ instance functorCallback :: Functor Callback where
 
 display :: forall a v. v -> Widget v a
 display v = mkWidget \cb -> do
-  cb (Left v)
+  cb (View v)
   pure (pure (unWid (display v)))
 
 -- | A callback that will never be resolved
@@ -54,19 +62,20 @@ instance widgetShiftMap :: ShiftMap (Widget v) (Widget v) where
   shiftMap f = f identity
 
 -- A Widget is basically a callback that returns a view or a return value
-newtype Widget v a = Widget (Callback (Either v a))
+newtype Widget v a = Widget (Callback (Result v a))
 derive instance functorWidget :: Functor (Widget v)
-instance newtypeWidget :: Newtype (Widget v a) (Callback (Either v a)) where
+
+instance newtypeWidget :: Newtype (Widget v a) (Callback (Result v a)) where
    unwrap = unWid
    wrap = mkWidget <<< runCallback
 
-unWid :: forall v a. Widget v a -> Callback (Either v a)
+unWid :: forall v a. Widget v a -> Callback (Result v a)
 unWid (Widget w) = w
 
-runWidget :: forall v a. Widget v a -> Callback' (Either v a)
+runWidget :: forall v a. Widget v a -> Callback' (Result v a)
 runWidget (Widget (Callback e)) = e
 
-mkWidget :: forall v a. Callback' (Either v a) -> Widget v a
+mkWidget :: forall v a. Callback' (Result v a) -> Widget v a
 mkWidget e = Widget (Callback e)
 
 instance applyWidget :: Apply (Widget v) where
@@ -75,30 +84,40 @@ instance applyWidget :: Apply (Widget v) where
 instance widgetMonad :: Monad (Widget v)
 
 instance applicativeWidget :: Applicative (Widget v) where
-  pure a = mkWidget \cb -> cb (Right a) $> pure never
+  pure a = mkWidget \cb -> cb (Completed a) $> pure never
 
 instance bindWidget :: Bind (Widget v) where
   bind m f = mkWidget \cb -> do
-    let cancelerRef = Ref.new Nothing
-    r <- cancelerRef
+    syncCanceler <- Ref.new Nothing
     -- CancelerRef starts out as a canceler for A, then becomes canceler for B
-    cancelerA <- runWidget m \res -> do
-      case res of
-        Left v -> cb (Left v)
-        Right a -> do
-          -- After A has been resolved, the canceler just becomes a canceler for B
-          -- TODO: Should cancelerA also be cancelled here?
-          --   Depends on what the ideal API contract is. INVESTIGATE.
-          cancelerB <- runWidget (f a) cb
-          Ref.write (Just cancelerB) r
+    asyncCanceler <- mfix \asyncCanceler -> do
+      cancelerA <- runWidget m \res -> do
+        case res of
+          View v -> cb (View v)
+          Completed a -> do
+            cancelerB <- runWidget (f a) cb
+            Ref.write (Just cancelerB) syncCanceler
+          Partial a -> do
+            -- After A has been resolved, the canceler just becomes a canceler for B
+            -- TODO: Should cancelerA also be cancelled here?
+            --   Depends on what the ideal API contract is. INVESTIGATE.
+            -- Cancel A first
+            cA <- join (Ref.read (asyncCanceler unit))
+            void $ runCallback cA \_ -> pure unit
+            --
+            cancelerB <- runWidget (f a) cb
+            void $ Ref.write cancelerB (asyncCanceler unit)
 
       -- The initial canceler just cancels A, and then binds the remaining widget with B
-    val <- Ref.read r
-    pure $ case val of
-      Just canceler -> canceler
-      Nothing -> do
+      Ref.new do
         c <- cancelerA
         pure (unWid (bind (Widget c) f))
+
+    -- The returned canceler just reads the canceler ref and runs it
+    scm <- Ref.read syncCanceler
+    case scm of
+      Just sc -> pure sc
+      Nothing -> Ref.read asyncCanceler
 
 -- Util
 flipEither ::
@@ -114,41 +133,53 @@ instance widgetMultiAlternative ::
   MultiAlternative (Widget v) where
   orr :: forall v a. Monoid v => Array (Widget v a) -> Widget v a
   orr widgets = mkWidget \cb -> do
-    cRef <- init widgets (pure never)
-    wRef <- init widgets (Left mempty)
+    wcRefs <- sequence $ A.replicate (A.length widgets) $ do
+       l <- Ref.new $ View mempty
+       r <- Ref.new $ never
+       pure $ Tuple l r
     subscribed <- Ref.new false
-    traverseWithIndex_ (subscribe subscribed cb wRef cRef) widgets
+    traverse_ (subscribe subscribed cb wcRefs) $ A.zip widgets wcRefs
     Ref.write true subscribed
-    es <- Ref.read wRef
-    cs <- Ref.read cRef
-    step cb mempty es cs
-    cancelers <- Ref.read cRef
+    let cancelers = map (Ref.read <<< snd) wcRefs
     wi <- sequence cancelers
+    step cb mempty wcRefs
     pure $ pure (unWid (orr $ Widget <$> wi))
-    where
-      init :: forall a b. Array (Widget v a) -> b -> Effect (Ref (Array b))
-      init ws x = Ref.new $ A.replicate (A.length ws) x
-      subscribe ss callback widgetsRef cancelersRef i w = do
-        canceler <- runWidget w \res -> do
-          es <- Ref.modify (\s -> fromMaybe s $ A.updateAt i res s) widgetsRef
-          cs <- Ref.read cancelersRef
-          subs <- Ref.read ss
-          case subs of
-             true  -> step callback mempty es cs
-             false -> pure unit
-        void $ Ref.modify (\s -> fromMaybe s $ A.updateAt i canceler s) cancelersRef
-      step callback v es cs = case A.uncons es of
-        Just { head, tail } -> case head of
-          Left va -> step callback (v <> va) tail cs
-          Right a -> do
-            callback (Right a)
-            -- Runs all cancelers after the callback returns a value
-            -- I feel like I am not using this the way it was intended
-            -- But it works, in the case of competing Affs, for example.
-            void $ for cs \n -> do
-              inner <- n
-              void $ runCallback inner \_ -> pure unit
-        Nothing -> callback (Left v)
+
+step ::
+  forall a v.
+  Semigroup v =>
+  (Result v a -> Effect Unit) ->
+  v ->
+  Array (Tuple (Ref (Result v a)) (Ref (Callback (Result v a)))) ->
+  Effect Unit
+step callback v wcRefs  = case A.uncons wcRefs of
+  Just { head, tail } -> do
+    w <- Ref.read (fst head)
+    case w of
+      View va -> step callback (v <> va) tail
+      Partial a -> callback (Partial a)
+      Completed a -> callback (Completed a)
+  Nothing -> callback (View v)
+
+subscribe ::
+  forall a v.
+  Semigroup v =>
+  Monoid v =>
+  Ref Boolean ->
+  (Result v a -> Effect Unit) ->
+  Array (Tuple (Ref (Result v a)) (Ref (Callback (Result v a)))) ->
+  Tuple (Widget v a) (Tuple (Ref (Result v a)) (Ref (Callback (Result v a)))) ->
+  Effect Unit
+subscribe ss callback wcRefs wrTpl = do
+  let refs = snd wrTpl
+  canceler <- runWidget (fst wrTpl) \res -> do
+    Ref.write res (fst refs)
+    subs <- Ref.read ss
+    case subs of
+      true  -> step callback mempty wcRefs
+      false -> pure unit
+  inner <- canceler
+  Ref.write inner (snd refs)
 
 instance widgetSemigroup :: (Monoid v) => Semigroup (Widget v a) where
   append w1 w2 = orr [w1, w2]
@@ -182,8 +213,8 @@ effAction ::
   Widget v a
 effAction a = mkWidget \cb -> do
   inner <- a
-  cb (Right inner)
-  pure (pure (unWid $ effAction a))
+  cb (Completed inner)
+  pure (pure (never))
 
 -- Sync eff
 
@@ -191,15 +222,14 @@ killAff ::
   forall a v.
   v ->
   Fiber Unit ->
-  Callback (Either v a)
+  Callback (Result v a)
 killAff v f = mkCallback \cb -> do
-  cb (Left v)
+  cb (View v)
   let aff = killFiber (error "cancelling aff") f
   runAff_ (handler cb) aff
   pure (pure never)
   where
-    handler cb (Right r) = pure unit
-    handler cb (Left _) = pure unit
+    handler cb _ = pure unit
 
 affAction ::
   forall a v.
@@ -207,11 +237,11 @@ affAction ::
   Aff a ->
   Widget v a
 affAction v aff = mkWidget \cb -> do
-  cb (Left v)
+  cb (View v)
   fiber <- runAff (handler cb) aff
   pure (pure (killAff v fiber))
   where
-    handler cb (Right r) = cb (Right r)
+    handler cb (Right r) = cb (Completed r)
     handler cb (Left _) = log "error calling aff"
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
@@ -234,13 +264,14 @@ debounced timeout w =
     runWidget w (hdlr cb timeout idRefInner)
   where
     hdlr cb time ref = \res -> case res of
-      Left l -> cb (Left l)
-      Right r -> debounceInner timeout cb ref r
+      View v -> cb (View v)
+      Completed r -> debounceInner timeout cb ref r
+      Partial r -> debounceInner timeout cb ref r
 
 debounceInner ::
   forall a v.
   Int ->
-  (Either v a -> Effect Unit) ->
+  (Result v a -> Effect Unit) ->
   Ref DebounceStatus ->
   a ->
   Effect Unit
@@ -251,7 +282,7 @@ debounceInner time callback ref a = do
     Waiting tid -> do
       clearTimeout tid
       schedule callback time ref a
-    Elapsed -> callback (Right a)
+    Elapsed -> callback (Partial a)
   where
     schedule cb t r v = do
       tid <- setTimeout time do
