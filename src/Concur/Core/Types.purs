@@ -147,6 +147,10 @@ instance widgetMultiAlternative ::
     step cb mempty results
     pure $ pure (unWid (orr $ Widget <$> wi))
 
+-- This is not pretty but works
+-- Idea is to aggregate the view or fire cb if we get a result.
+-- It would be nice to be able to bail out early without traversing the
+-- whole array when we get a result
 foldStep ::
   forall v a.
   Monoid v =>
