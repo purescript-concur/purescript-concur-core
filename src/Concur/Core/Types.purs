@@ -6,6 +6,7 @@ import Control.MonadFix (mfix)
 import Control.ShiftMap (class ShiftMap)
 import Data.Array as A
 import Data.Either (Either(..))
+import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
 import Data.Traversable (sequence, traverse_)
@@ -138,28 +139,49 @@ instance widgetMultiAlternative ::
        r <- Ref.new $ never
        pure $ Tuple l r
     subscribed <- Ref.new false
-    traverse_ (subscribe subscribed cb wcRefs) $ A.zip widgets wcRefs
+    let results = map fst wcRefs
+    traverse_ (subscribe subscribed cb results) $ A.zip widgets wcRefs
     Ref.write true subscribed
     let cancelers = map (Ref.read <<< snd) wcRefs
     wi <- sequence cancelers
-    step cb mempty wcRefs
+    step cb mempty results
     pure $ pure (unWid (orr $ Widget <$> wi))
+
+foldStep ::
+  forall v a.
+  Monoid v =>
+  (Result v a -> Effect Unit) ->
+  Effect (Maybe v) ->
+  Ref (Result v a) ->
+  Effect (Maybe v)
+foldStep callback lastE next = do
+  last <- lastE
+  case last of
+    Just v -> do
+      n <- Ref.read next
+      case n of
+        View va -> pure $ Just $ v <> va
+        Partial a -> do
+          callback (Partial a)
+          pure Nothing
+        Completed a -> do
+          callback (Completed a)
+          pure Nothing
+    Nothing -> pure Nothing
 
 step ::
   forall a v.
+  Monoid v =>
   Semigroup v =>
   (Result v a -> Effect Unit) ->
   v ->
-  Array (Tuple (Ref (Result v a)) (Ref (Callback (Result v a)))) ->
+  Array (Ref (Result v a)) ->
   Effect Unit
-step callback v wcRefs  = case A.uncons wcRefs of
-  Just { head, tail } -> do
-    w <- Ref.read (fst head)
-    case w of
-      View va -> step callback (v <> va) tail
-      Partial a -> callback (Partial a)
-      Completed a -> callback (Completed a)
-  Nothing -> callback (View v)
+step callback v resultRefs  = do
+  maybeView  <- foldl (foldStep callback) (pure $ Just mempty) resultRefs
+  case maybeView of
+    Just view -> callback (View view)
+    Nothing -> pure unit
 
 subscribe ::
   forall a v.
@@ -167,16 +189,16 @@ subscribe ::
   Monoid v =>
   Ref Boolean ->
   (Result v a -> Effect Unit) ->
-  Array (Tuple (Ref (Result v a)) (Ref (Callback (Result v a)))) ->
+  Array (Ref (Result v a)) ->
   Tuple (Widget v a) (Tuple (Ref (Result v a)) (Ref (Callback (Result v a)))) ->
   Effect Unit
-subscribe ss callback wcRefs wrTpl = do
+subscribe ss callback results wrTpl = do
   let refs = snd wrTpl
   canceler <- runWidget (fst wrTpl) \res -> do
     Ref.write res (fst refs)
     subs <- Ref.read ss
     case subs of
-      true  -> step callback mempty wcRefs
+      true  -> step callback mempty results
       false -> pure unit
   inner <- canceler
   Ref.write inner (snd refs)
