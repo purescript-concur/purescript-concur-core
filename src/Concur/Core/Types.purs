@@ -141,6 +141,9 @@ instance widgetMultiAlternative ::
     subscribed <- Ref.new false
     let results = map fst wcRefs
     traverse_ (subscribe subscribed cb results) $ A.zip widgets wcRefs
+    -- Allow bubbing of callbacks up only *after* they are all hooked.
+    -- This is because view callbacks i.e cb (Left v) fire on creation of a widget.
+    -- This is controlled using `subscribed` ref.
     Ref.write true subscribed
     let cancelers = map (Ref.read <<< snd) wcRefs
     wi <- sequence cancelers
