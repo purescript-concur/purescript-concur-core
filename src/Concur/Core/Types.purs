@@ -18,7 +18,6 @@ import Effect.Aff.Class (class MonadAff)
 import Effect.Exception (error)
 import Effect.Ref as Ref
 import Effect.Ref (Ref)
-import Effect.Timer (TimeoutId, clearTimeout, setTimeout)
 import Control.Alternative (class Alternative)
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Plus (class Alt, class Plus, empty)
@@ -55,6 +54,11 @@ display v = mkWidget \cb -> do
 -- | A callback that will never be resolved
 never :: forall a. Callback a
 never = mkCallback \_cb -> pure (pure never)
+
+-- Ignore all callbacks on a widget
+silence :: forall a v. Widget v a -> Widget v a
+silence w = mkWidget \cb -> do
+  runWidget w \res -> void $ pure never
 
 -- NOTE: We currently have no monadic instance for callbacks
 -- Remember: The monadic instance *must* agree with the applicative instance
