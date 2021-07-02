@@ -70,9 +70,9 @@ instance widgetShiftMap :: ShiftMap (Widget v) (Widget v) where
 newtype Widget v a = Widget (Callback (Result v a))
 derive instance functorWidget :: Functor (Widget v)
 
-instance newtypeWidget :: Newtype (Widget v a) (Callback (Result v a)) where
-   unwrap = unWid
-   wrap = mkWidget <<< runCallback
+instance newtypeWidget :: Newtype (Widget v a) (Callback (Result v a))
+--    unwrap = unWid
+--    wrap = mkWidget <<< runCallback
 
 unWid :: forall v a. Widget v a -> Callback (Result v a)
 unWid (Widget w) = w
