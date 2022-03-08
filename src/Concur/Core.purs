@@ -6,11 +6,11 @@ module Concur.Core
 )
 where
 
-import Prelude (Unit, discard, pure, ($))
 import Concur.Core.IsWidget (class IsWidget)
 import Concur.Core.LiftWidget (class LiftWidget, liftWidget)
 import Concur.Core.Types (Widget(..), mkWidget, runWidget, unWid, Result(..))
 import Effect (Effect)
+import Prelude (Unit, discard, pure, ($))
 
 -- Helpers for some very common use of unsafe blocking io
 
@@ -24,9 +24,8 @@ mkNodeWidget mkView w = mkWidget \cb -> do
   where
     f cb = \x -> case x of
       View vc -> cb (View $ vp vc cb)
-      Partial a -> cb (Partial a)
       Completed a -> cb (Completed a)
-    vp vc cb = mkView (\a -> cb (Partial a)) vc
+    vp vc cb = mkView (\a -> cb (Completed a)) vc
 
 -- | Construct a widget with just props
 mkLeafWidget ::
@@ -37,4 +36,4 @@ mkLeafWidget mkView = mkWidget \cb -> do
   cb (View $ v cb)
   pure (pure (unWid (mkLeafWidget mkView)))
   where
-    v cb = mkView (\a -> cb (Partial a))
+    v cb = mkView (\a -> cb (Completed a))

@@ -2,7 +2,9 @@ module Concur.Core.Types where
 
 import Prelude
 
-import Control.MonadFix (mfix)
+import Control.Alternative (class Alternative)
+import Control.MultiAlternative (class MultiAlternative, orr)
+import Control.Plus (class Alt, class Plus, empty)
 import Control.ShiftMap (class ShiftMap)
 import Data.Array as A
 import Data.Either (Either(..))
@@ -13,29 +15,26 @@ import Data.Traversable (sequence, traverse_)
 import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Effect.Aff (Aff, Fiber, runAff_, runAff, killFiber)
-import Effect.Console (log)
 import Effect.Aff.Class (class MonadAff)
-import Effect.Exception (error)
-import Effect.Ref as Ref
-import Effect.Ref (Ref)
-import Control.Alternative (class Alternative)
-import Control.MultiAlternative (class MultiAlternative, orr)
-import Control.Plus (class Alt, class Plus, empty)
 import Effect.Class (class MonadEffect)
+import Effect.Console (log)
+import Effect.Exception (error)
+import Effect.Ref (Ref)
+import Effect.Ref as Ref
 
 -- | Callback -> Effect Canceler (returns the unused effect)
 -- | Canceling will *always* have some leftover effect, else it would have ended already
 -- | TODO: Have a way to check if the callback is finished (i.e. will never be called again)
 -- |       One option is to have a cb = (Either partResult a -> Effect Unit)
 newtype Callback a = Callback (Callback' a)
-type Callback' a = (a -> Effect Unit) -> Effect (Effect (Callback a))
+type Callback' a = (a -> Effect Unit) -> Effect (Canceler a)
+type Canceler a = Effect (Callback a)
 
-data Result v a = View v | Completed a | Partial a
+data Result v a = View v | Completed a
 
 instance functorResult :: Functor (Result v) where
-  map f (View v) = View v
+  map _ (View v) = View v
   map f (Completed a) = Completed (f a)
-  map f (Partial a) = Partial (f a)
 
 mkCallback :: forall a. Callback' a -> Callback a
 mkCallback = Callback
@@ -46,19 +45,9 @@ runCallback (Callback f) = f
 instance functorCallback :: Functor Callback where
   map f g = mkCallback \cb -> map (map f) <$> runCallback g (cb <<< f)
 
-display :: forall a v. v -> Widget v a
-display v = mkWidget \cb -> do
-  cb (View v)
-  pure (pure (unWid (display v)))
-
 -- | A callback that will never be resolved
 never :: forall a. Callback a
 never = mkCallback \_cb -> pure (pure never)
-
--- Ignore all callbacks on a widget
-silence :: forall a v. Widget v a -> Widget v a
-silence w = mkWidget \cb -> do
-  runWidget w \res -> void $ pure never
 
 -- NOTE: We currently have no monadic instance for callbacks
 -- Remember: The monadic instance *must* agree with the applicative instance
@@ -71,8 +60,6 @@ newtype Widget v a = Widget (Callback (Result v a))
 derive instance functorWidget :: Functor (Widget v)
 
 instance newtypeWidget :: Newtype (Widget v a) (Callback (Result v a))
---    unwrap = unWid
---    wrap = mkWidget <<< runCallback
 
 unWid :: forall v a. Widget v a -> Callback (Result v a)
 unWid (Widget w) = w
@@ -91,38 +78,41 @@ instance widgetMonad :: Monad (Widget v)
 instance applicativeWidget :: Applicative (Widget v) where
   pure a = mkWidget \cb -> cb (Completed a) $> pure never
 
+fixCancelerRef :: forall a. (Ref (Canceler a) -> Effect (Canceler a)) -> Effect (Ref.Ref (Canceler a))
+fixCancelerRef f = do
+  ref <- Ref.new (pure never)
+  cancel <- f ref
+  Ref.write cancel ref
+  pure ref
+
 instance bindWidget :: Bind (Widget v) where
   bind m f = mkWidget \cb -> do
-    syncCanceler <- Ref.new Nothing
     -- CancelerRef starts out as a canceler for A, then becomes canceler for B
-    asyncCanceler <- mfix \asyncCanceler -> do
+    cancelerRef <- fixCancelerRef \cancelerRef -> do
       cancelerA <- runWidget m \res -> do
         case res of
           View v -> cb (View v)
           Completed a -> do
+            _ <- join (Ref.read cancelerRef)
             cancelerB <- runWidget (f a) cb
-            Ref.write (Just cancelerB) syncCanceler
-          Partial a -> do
-            -- After A has been resolved, the canceler just becomes a canceler for B
-            -- TODO: Should cancelerA also be cancelled here?
-            --   Depends on what the ideal API contract is. INVESTIGATE.
-            -- Cancel A first
-            cA <- join (Ref.read (asyncCanceler unit))
-            void $ runCallback cA \_ -> pure unit
-            --
-            cancelerB <- runWidget (f a) cb
-            void $ Ref.write cancelerB (asyncCanceler unit)
-
-      -- The initial canceler just cancels A, and then binds the remaining widget with B
-      Ref.new do
+            Ref.write cancelerB cancelerRef
+      -- The initial canceler cancels A, and then binds the remaining widget with B
+      pure do
         c <- cancelerA
-        pure (unWid (bind (Widget c) f))
+        pure (unWid (Widget c >>= f))
 
-    -- The returned canceler just reads the canceler ref and runs it
-    scm <- Ref.read syncCanceler
-    case scm of
-      Just sc -> pure sc
-      Nothing -> Ref.read asyncCanceler
+    -- The returned canceler reads the canceler ref and runs it
+    pure $ join (Ref.read cancelerRef)
+
+display :: forall a v. v -> Widget v a
+display v = mkWidget \cb -> do
+  cb (View v)
+  pure (pure (unWid (display v)))
+
+-- Ignore all callbacks on a widget
+silence :: forall a v. Widget v a -> Widget v a
+silence w = mkWidget \_cb -> do
+  runWidget w \_res -> void $ pure never
 
 -- Util
 flipEither ::
@@ -151,7 +141,7 @@ instance widgetMultiAlternative ::
     Ref.write true subscribed
     let cancelers = map (Ref.read <<< snd) wcRefs
     wi <- sequence cancelers
-    step cb mempty results
+    step cb results
     pure $ pure (unWid (orr $ Widget <$> wi))
 
 -- This is not pretty but works
@@ -172,9 +162,6 @@ foldStep callback lastE next = do
       n <- Ref.read next
       case n of
         View va -> pure $ Just $ v <> va
-        Partial a -> do
-          callback (Partial a)
-          pure Nothing
         Completed a -> do
           callback (Completed a)
           pure Nothing
@@ -185,10 +172,9 @@ step ::
   Monoid v =>
   Semigroup v =>
   (Result v a -> Effect Unit) ->
-  v ->
   Array (Ref (Result v a)) ->
   Effect Unit
-step callback v resultRefs  = do
+step callback resultRefs  = do
   maybeView  <- foldl (foldStep callback) (pure $ Just mempty) resultRefs
   case maybeView of
     Just view -> callback (View view)
@@ -209,7 +195,7 @@ subscribe ss callback results wrTpl = do
     Ref.write res (fst refs)
     subs <- Ref.read ss
     case subs of
-      true  -> step callback mempty results
+      true  -> step callback results
       false -> pure unit
   inner <- canceler
   Ref.write inner (snd refs)
@@ -262,7 +248,7 @@ killAff v f = mkCallback \cb -> do
   runAff_ (handler cb) aff
   pure (pure never)
   where
-    handler cb _ = pure unit
+    handler _cb _ = pure unit
 
 affAction ::
   forall a v.
@@ -275,7 +261,7 @@ affAction v aff = mkWidget \cb -> do
   pure (pure (killAff v fiber))
   where
     handler cb (Right r) = cb (Completed r)
-    handler cb (Left _) = log "error calling aff"
+    handler _cb (Left _) = log "error calling aff"
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
   liftEffect = effAction
