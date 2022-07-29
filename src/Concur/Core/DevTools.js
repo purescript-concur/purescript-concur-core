@@ -4,7 +4,7 @@ function hasDevTools() {
   return (process.env.NODE_ENV === 'development' && window.__REDUX_DEVTOOLS_EXTENSION__);
 }
 
-exports.connectDevTools = function() {
+export const connectDevTools = function() {
   if(hasDevTools()) {
     return window.__REDUX_DEVTOOLS_EXTENSION__.connect();
   } else {
@@ -13,7 +13,7 @@ exports.connectDevTools = function() {
   }
 };
 
-exports.disconnectDevTools = function() {
+export const disconnectDevTools = function() {
   if(hasDevTools()) {
     return window.__REDUX_DEVTOOLS_EXTENSION__.disconnect();
   } else {
@@ -22,7 +22,7 @@ exports.disconnectDevTools = function() {
   }
 };
 
-exports.sendToDevTools = function(connection) {
+export const sendToDevTools = function(connection) {
   return function(action) {
     return function(state) {
       return function() {
@@ -37,7 +37,7 @@ exports.sendToDevTools = function(connection) {
   };
 };
 
-exports.subscribeDevTools = function(connection) {
+export const subscribeDevTools = function(connection) {
   return function(handler) {
     return function() {
       if(hasDevTools()) {
@@ -55,7 +55,7 @@ exports.subscribeDevTools = function(connection) {
   };
 };
 
-exports.unsubscribeDevTools = function(connection) {
+export const unsubscribeDevTools = function(connection) {
   return function() {
     connection.unsubscribe();
   };
