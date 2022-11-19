@@ -251,7 +251,7 @@ instance isLazyCofree :: Z.Lazy (Cofree f a) where
 instance shiftMapCofree :: Monoid v => ShiftMap (Widget v) (Cofree (Widget v)) where
   shiftMap f (Cofree l) = deferCofree \_ ->
     let Tuple a rest = force l
-    in Tuple a (f pure rest)
+    in Tuple a (f pure (map (shiftMap f) rest))
 
 mfix :: forall f a. (Lazy a -> Cofree f a) -> Cofree f a
 mfix f = Z.fix \res -> f $ lazyHead res
