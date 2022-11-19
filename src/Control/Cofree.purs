@@ -30,7 +30,7 @@ import Control.Lazy as Z
 import Control.Monad.Free (Free, runFreeM)
 import Control.Monad.Rec.Class (class MonadRec)
 import Control.Monad.State (State, StateT(..), runState, runStateT, state)
-import Control.ShiftMap (class ShiftMap)
+import Control.ShiftMap (class ShiftMap, shiftMap)
 import Data.Eq (class Eq1, eq1)
 import Data.Foldable (class Foldable, foldr, foldl, foldMap)
 import Data.Lazy (Lazy, defer, force)
