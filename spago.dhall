@@ -23,7 +23,9 @@ You can edit this file as you like.
   , "parallel"
   , "prelude"
   , "profunctor-lenses"
+  , "refs"
   , "tailrec"
+  , "js-timers"
   , "transformers"
   , "tuples"
   ]
