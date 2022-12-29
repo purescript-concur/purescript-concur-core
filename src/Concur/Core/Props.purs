@@ -68,11 +68,11 @@ debounceInner ::
 debounceInner time ref callback a = do
   id <- Ref.read ref
   case id of
-    Nothing -> schedule callback time ref a
+    Nothing -> schedule a
     Just tid -> do
       clearTimeout tid
-      schedule callback time ref a
+      schedule a
   where
-    schedule cb t r v = do
+    schedule v = do
       tid <- setTimeout time $ callback v
       Ref.write (Just tid) ref
