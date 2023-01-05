@@ -3,6 +3,7 @@ module Concur.Core.Types where
 import Prelude
 
 import Control.Alternative (class Alternative)
+import Control.Monad.Rec.Class (class MonadRec, Step(..), tailRecM)
 import Control.MultiAlternative (class MultiAlternative, orr)
 import Control.Plus (class Alt, class Plus, empty)
 import Control.ShiftMap (class ShiftMap)
@@ -77,6 +78,11 @@ instance widgetMonad :: Monad (Widget v)
 
 instance applicativeWidget :: Applicative (Widget v) where
   pure a = mkWidget \cb -> cb (Completed a) $> pure never
+
+instance monadRecWidget :: MonadRec (Widget v) where
+  tailRecM k a = k a >>= case _ of
+    Loop x -> tailRecM k x
+    Done y -> pure y
 
 fixCancelerRef :: forall a. (Ref (Canceler a) -> Effect (Canceler a)) -> Effect (Ref.Ref (Canceler a))
 fixCancelerRef f = do
