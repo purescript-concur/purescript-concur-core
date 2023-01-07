@@ -99,7 +99,8 @@ instance bindWidget :: Bind (Widget v) where
         case res of
           View v -> cb (View v)
           Completed a -> do
-            _ <- join (Ref.read cancelerRef)
+            cA <- join (Ref.read cancelerRef)
+            void $ runCallback cA \_ -> pure unit
             cancelerB <- runWidget (f a) cb
             Ref.write cancelerB cancelerRef
       -- The initial canceler cancels A, and then binds the remaining widget with B
