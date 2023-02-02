@@ -1,5 +1,6 @@
 module Concur.Core.Patterns
 ( loopState
+, loopState'
 , retryUntil
 , retryUntilLoop
 , tea
@@ -29,6 +30,7 @@ import Effect.Aff.Bus as ABus
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (class MonadEffect, liftEffect)
 
+
 -- | A very useful combinator for widgets with localised state
 loopState ::
   forall m a s.
@@ -39,6 +41,10 @@ loopState ::
 loopState s f = f s >>= case _ of
   Left s' -> loopState s' f
   Right a -> pure a
+
+-- | Never ending widgets with localised state
+loopState' :: forall m a s. Monad m => (s -> m s) -> s -> m a
+loopState' f s = f s >>= loopState' f
 
 -- | Repeat a computation until the value satisfies a predicate
 retryUntil :: forall m a. Monad m => (a -> Boolean) -> m a -> m a
