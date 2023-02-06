@@ -85,13 +85,6 @@ instance monadRecWidget :: MonadRec (Widget v) where
     Loop x -> tailRecM k x
     Done y -> pure y
 
-fixCancelerRef :: (Ref Canceler -> Effect Canceler) -> Effect (Ref Canceler)
-fixCancelerRef f = do
-  ref <- Ref.new mempty
-  cancel <- f ref
-  Ref.write cancel ref
-  pure ref
-
 instance bindWidget :: Bind (Widget v) where
   bind m f = mkWidget \cb -> do
     -- CancelerRef starts out as a canceler for A, then becomes canceler for B
