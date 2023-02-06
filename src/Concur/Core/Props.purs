@@ -1,10 +1,13 @@
 module Concur.Core.Props where
 
-import Control.Applicative (pure)
-import Data.Function ((<<<))
-import Data.Functor (class Functor)
-import Data.Unit (Unit, unit)
+import Prelude
+
+import Data.Maybe (Maybe(..))
 import Effect (Effect)
+import Effect.Ref (Ref)
+import Effect.Ref (write, read, new) as Ref
+import Effect.Timer (TimeoutId, clearTimeout, setTimeout)
+import Effect.Unsafe (unsafePerformEffect)
 
 data Props p a
   = PrimProp p
@@ -44,3 +47,32 @@ filterProp ok (Handler g) = Handler \h ->
   (g \a -> if ok a
       then h a
       else pure unit)
+
+debounce :: forall p a.
+   Int ->
+   Props p a ->
+   Props p a
+debounce t p =
+  let ref = unsafePerformEffect $ Ref.new Nothing in
+  case p of
+    PrimProp pp -> PrimProp pp
+    Handler hdlr -> Handler \cb -> hdlr (debounceInner t ref cb)
+
+debounceInner ::
+  forall a.
+  Int ->
+  Ref (Maybe TimeoutId) ->
+  (a -> Effect Unit) ->
+  a ->
+  Effect Unit
+debounceInner time ref callback a = do
+  id <- Ref.read ref
+  case id of
+    Nothing -> schedule a
+    Just tid -> do
+      clearTimeout tid
+      schedule a
+  where
+    schedule v = do
+      tid <- setTimeout time $ callback v
+      Ref.write (Just tid) ref
