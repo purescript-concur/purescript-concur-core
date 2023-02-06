@@ -11,11 +11,13 @@
   "files": [],
   "scripts": {
     "build": "spago build",
-    "test": "spago -x test.dhall test"
+    "test": "spago -x test.dhall test",
+    "tidy": "purs-tidy format-in-place \"src/**/*.purs\""
   },
   "devDependencies": {
     "parcel-bundler": "^1.12.4",
     "purescript": "^0.15.4",
+    "purs-tidy": "^0.9.2",
     "rimraf": "^3.0.0",
     "spago": "^0.20.9"
   }

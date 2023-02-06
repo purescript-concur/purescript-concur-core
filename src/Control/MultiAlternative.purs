@@ -15,11 +15,11 @@ class Plus m <= MultiAlternative m where
   orr :: forall a. Array (m a) -> m a
 
 -- Use this if there isn't a more efficient implementation
-defaultOrr ::
-  forall a m.
-  Plus m =>
-  Array (m a) ->
-  m a
+defaultOrr
+  :: forall a m
+   . Plus m
+  => Array (m a)
+  -> m a
 defaultOrr xs = foldl alt empty xs
 
 -- TODO: Define a fallback instance for all monad transformers

@@ -12,7 +12,7 @@ import Data.Functor (class Functor, map)
 -- | Wrap a single widget with a node that can have eventHandlers attached
 el
   :: forall f p v m a
-  .  ShiftMap (Widget v) m
+   . ShiftMap (Widget v) m
   => Functor f
   => (f p -> v -> v)
   -> f (Props p a)
@@ -23,7 +23,7 @@ el e props = shiftMap (\f w -> mkNodeWidget (\h v -> (e (map (mkProp h <<< map f
 -- | Promote a leaf node to a widget
 elLeaf
   :: forall f p v m a
-  .  LiftWidget v m
+   . LiftWidget v m
   => Functor f
   => (f p -> v)
   -> f (Props p a)
@@ -33,7 +33,7 @@ elLeaf e props = liftWidget $ mkLeafWidget \h -> e (map (mkProp h) props)
 -- | Wrap some widgets with a node that can have eventHandlers attached
 el'
   :: forall f p v m a
-  .  ShiftMap (Widget v) m
+   . ShiftMap (Widget v) m
   => MultiAlternative m
   => Functor f
   => (f p -> v -> v)

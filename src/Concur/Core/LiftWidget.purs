@@ -1,6 +1,5 @@
 module Concur.Core.LiftWidget where
 
--- | A way to lift widgets into higher monads
 import Concur.Core.Types (Widget)
 import Control.Monad (class Monad)
 import Control.Monad.Except.Trans (ExceptT)
