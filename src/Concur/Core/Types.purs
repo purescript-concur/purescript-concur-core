@@ -22,7 +22,6 @@ import Data.TraversableWithIndex (forWithIndex)
 import Data.Unit (Unit, unit)
 import Effect (Effect)
 import Effect.Class (class MonadEffect)
-import Effect.Ref (Ref)
 import Effect.Ref as Ref
 
 -- | Callback -> Effect Canceler (returns the unused effect)
@@ -130,7 +129,9 @@ instance widgetMultiAlternative :: Monoid v => MultiAlternative (Widget v) where
             let mviews = A.updateAt i v views
             case mviews of
               Nothing -> pure unit
-              Just views -> cb (View (fold views))
+              Just views' -> do
+                Ref.write views' viewsRef
+                cb (View (fold views'))
           Completed a -> do
             runCancelers
             cb (Completed a)
