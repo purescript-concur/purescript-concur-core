@@ -115,27 +115,43 @@ flipEither :: forall a b. Either a b -> Either b a
 flipEither (Left a) = Right a
 flipEither (Right b) = Left b
 
+data InitialisingRenderState
+  = Initialising
+  | Aborted
+  | Initialised
+
+initialised :: InitialisingRenderState -> InitialisingRenderState
+initialised = case _ of
+  Initialising -> Initialised
+  a -> a
+
 instance widgetMultiAlternative :: Monoid v => MultiAlternative (Widget v) where
   orr :: forall a. Array (Widget v a) -> Widget v a
   orr widgets = mkWidget \cb -> do
     viewsRef <- Ref.new (A.replicate (A.length widgets) mempty)
     cancelerRef <- Ref.new mempty
+    renderStateRef <- Ref.new Initialising
     let runCancelers = join (Ref.read cancelerRef)
     _ <- forWithIndex widgets \i w -> do
-      c <- runWidget w \res -> do
-        views <- Ref.read viewsRef
-        case res of
-          View v -> do
-            let mviews = A.updateAt i v views
-            case mviews of
-              Nothing -> pure unit
-              Just views' -> do
-                Ref.write views' viewsRef
-                cb (View (fold views'))
-          Completed a -> do
-            runCancelers
-            cb (Completed a)
+      c <- runWidget w \res -> case res of
+        View v -> do
+          views <- Ref.read viewsRef
+          case A.updateAt i v views of
+            Nothing -> pure unit
+            Just views' -> do
+              Ref.write views' viewsRef
+              renderState <- Ref.read renderStateRef
+              case renderState of
+                Initialised -> cb (View (fold views'))
+                _ -> pure unit
+        Completed a -> do
+          Ref.write Aborted renderStateRef
+          runCancelers
+          cb (Completed a)
       Ref.modify (_ *> c) cancelerRef
+    Ref.modify_ initialised renderStateRef
+    views <- Ref.read viewsRef
+    cb (View (fold views))
     pure runCancelers
 
 instance widgetSemigroup :: (Monoid v) => Semigroup (Widget v a) where
