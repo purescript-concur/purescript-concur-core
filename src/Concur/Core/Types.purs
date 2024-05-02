@@ -25,7 +25,6 @@ import Effect.Class (class MonadEffect)
 import Effect.Ref as Ref
 
 -- | Callback -> Effect Canceler (returns the unused effect)
--- | Canceling will *always* have some leftover effect, else it would have ended already
 newtype Callback a = Callback (Callback' a)
 type Callback' a = (a -> Effect Unit) -> Effect Canceler
 type Canceler = Effect Unit

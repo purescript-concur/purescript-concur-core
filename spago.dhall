@@ -19,6 +19,7 @@ You can edit this file as you like.
   , "tailrec"
   , "transformers"
   , "tuples"
+  , "unsafe-reference"
   ]
 , license = "MIT"
 , repository = "https://github.com/purescript-concur/purescript-concur-core"
