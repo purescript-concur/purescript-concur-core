@@ -3,16 +3,41 @@ module Concur.Core.Patterns where
 import Concur.Core (Result(..), Widget, mkWidget)
 import Control.Applicative (pure)
 import Control.Bind (bind, discard, (>>=))
+import Control.Monad (class Monad)
 import Data.Array as Array
-import Data.Function (($))
+import Data.Either (Either(..))
+import Data.Function (flip, ($), (>>>))
 import Data.Monoid (class Monoid)
 import Data.Semigroup ((<>))
 import Data.Traversable (traverse_)
 import Data.Unit (Unit)
-import Data.Void (Void)
 import Effect.Class (class MonadEffect, liftEffect)
 import Effect.Ref as Ref
 import Unsafe.Reference (unsafeRefEq)
+
+-- | A very useful combinator for widgets with localised state
+loopState :: forall m a s. Monad m => s -> (s -> m (Either s a)) -> m a
+loopState s f = f s >>= case _ of
+  Left s' -> loopState s' f
+  Right a -> pure a
+
+-- | Repeat a computation until the value satisfies a predicate
+retryUntil :: forall m a. Monad m => (a -> Boolean) -> m a -> m a
+retryUntil p w = w >>= \a -> if p a then pure a else retryUntil p w
+
+-- | Repeat a computation until the value satisfies a predicate, looping in the previous value
+retryUntilLoop :: forall m a. Monad m => (a -> Boolean) -> (a -> m a) -> a -> m a
+retryUntilLoop p w a = w a >>= \a' -> if p a' then pure a' else retryUntilLoop p w a'
+
+-- | The Elm Architecture
+tea :: forall a s m x. Monad m
+  => s
+  -> (s -> m a)
+  -> (a -> s -> s)
+  -> m x
+tea s render update = go s
+  where
+  go st = render st >>= (flip update st >>> go)
 
 type RemoteInterface v a =
   { yield :: Widget v a
