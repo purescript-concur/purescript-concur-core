@@ -13,7 +13,7 @@ import Data.Array as A
 import Data.Either (Either(..))
 import Data.Foldable (fold)
 import Data.Function (identity, ($), (<<<))
-import Data.Functor (class Functor, void, ($>))
+import Data.Functor (class Functor, void, ($>), map)
 import Data.Maybe (Maybe(..))
 import Data.Monoid (class Monoid, mempty)
 import Data.Newtype (class Newtype)
@@ -26,14 +26,27 @@ import Effect.Ref as Ref
 
 -- | Callback -> Effect Canceler (returns the unused effect)
 newtype Callback a = Callback (Callback' a)
+
+derive instance Newtype (Callback a) _
+
 type Callback' a = (a -> Effect Unit) -> Effect Canceler
 type Canceler = Effect Unit
 
 data Result v a = View v | Completed a
 
+result :: forall v a r. (v -> r) -> (a -> r) -> Result v a -> r
+result f g = case _ of
+  View v -> f v
+  Completed a -> g a
+
 instance functorResult :: Functor (Result v) where
   map _ (View v) = View v
   map f (Completed a) = Completed (f a)
+
+mapViewResult :: forall u v a. (u -> v) -> Result u a -> Result v a
+mapViewResult f = case _ of
+  View u -> View (f u)
+  Completed a -> Completed a
 
 mkCallback :: forall a. Callback' a -> Callback a
 mkCallback = Callback
@@ -57,9 +70,9 @@ instance widgetShiftMap :: ShiftMap (Widget v) (Widget v) where
 -- A Widget is basically a callback that returns a view or a return value
 newtype Widget v a = Widget (Callback (Result v a))
 
-derive instance functorWidget :: Functor (Widget v)
+derive instance Functor (Widget v)
 
-instance newtypeWidget :: Newtype (Widget v a) (Callback (Result v a))
+derive instance Newtype (Widget v a) _
 
 unWid :: forall v a. Widget v a -> Callback (Result v a)
 unWid (Widget w) = w
@@ -69,6 +82,9 @@ runWidget (Widget (Callback e)) = e
 
 mkWidget :: forall v a. Callback' (Result v a) -> Widget v a
 mkWidget e = Widget (Callback e)
+
+mapView :: forall u v a. (u -> v) -> Widget u a -> Widget v a
+mapView f (Widget w) = Widget (map (mapViewResult f) w)
 
 instance applyWidget :: Apply (Widget v) where
   apply = ap

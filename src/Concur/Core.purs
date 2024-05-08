@@ -10,21 +10,16 @@ import Data.Monoid (mempty)
 import Effect (Effect)
 import Prelude (Unit, discard, pure, ($))
 
--- Helpers for some very common use of unsafe blocking io
-
 -- | Construct a widget, by wrapping an existing widget in a view event
 mkNodeWidget
   :: forall a v
    . ((a -> Effect Unit) -> v -> v)
   -> Widget v a
   -> Widget v a
-mkNodeWidget mkView w = mkWidget \cb -> do
-  runWidget w (f cb)
-  where
-  f cb = \x -> case x of
-    View vc -> cb (View $ vp vc cb)
+mkNodeWidget mkView w = mkWidget \cb ->
+  runWidget w $ case _ of
+    View v -> cb (View $ mkView (\a -> cb (Completed a)) v)
     Completed a -> cb (Completed a)
-  vp vc cb = mkView (\a -> cb (Completed a)) vc
 
 -- | Construct a widget with just props
 mkLeafWidget
@@ -36,3 +31,4 @@ mkLeafWidget mkView = mkWidget \cb -> do
   pure mempty
   where
   v cb = mkView (\a -> cb (Completed a))
+

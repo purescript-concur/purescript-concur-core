@@ -19,17 +19,18 @@ class ShiftMap s t where
 -- Instances for common transformers
 -- It's not possible to use the `map*` functions anymore
 
-instance exceptShiftMap :: ShiftMap m (ExceptT e m) where
+instance ShiftMap m (ExceptT e m) where
   shiftMap f (ExceptT m) = ExceptT do f Right m
 
-instance rwsShiftMap :: Monoid w => ShiftMap m (RWST r w s m) where
+instance Monoid w => ShiftMap m (RWST r w s m) where
   shiftMap f (RWST g) = RWST \r s -> f (\a -> RWSResult s a mempty) (g r s)
 
-instance readerShiftMap :: ShiftMap m (ReaderT r m) where
+instance ShiftMap m (ReaderT r m) where
   shiftMap f (ReaderT m) = ReaderT \r -> f identity (m r)
 
-instance stateShiftMap :: Monad m => ShiftMap m (StateT s m) where
+instance Monad m => ShiftMap m (StateT s m) where
   shiftMap f (StateT g) = StateT \s -> f (\a -> Tuple a s) (g s)
 
-instance writerShiftMap :: Monoid w => ShiftMap m (WriterT w m) where
+instance Monoid w => ShiftMap m (WriterT w m) where
   shiftMap f (WriterT m) = WriterT do f (\a -> Tuple a mempty) m
+

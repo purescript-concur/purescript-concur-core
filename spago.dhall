@@ -15,6 +15,7 @@ You can edit this file as you like.
   , "maybe"
   , "newtype"
   , "prelude"
+  , "profunctor-lenses"
   , "refs"
   , "tailrec"
   , "transformers"
