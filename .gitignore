@@ -14,3 +14,4 @@ html/index.js
 .spago
 .cache
 dist
+/.psc-ide-port
