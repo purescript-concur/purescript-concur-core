@@ -24,7 +24,6 @@ import Effect (Effect)
 import Effect.Class (class MonadEffect)
 import Effect.Ref as Ref
 
--- | Callback -> Effect Canceler (returns the unused effect)
 newtype Callback a = Callback (Callback' a)
 
 derive instance Newtype (Callback a) _
@@ -39,7 +38,7 @@ result f g = case _ of
   View v -> f v
   Completed a -> g a
 
-instance functorResult :: Functor (Result v) where
+instance Functor (Result v) where
   map _ (View v) = View v
   map f (Completed a) = Completed (f a)
 
@@ -54,7 +53,7 @@ mkCallback = Callback
 runCallback :: forall a. Callback a -> Callback' a
 runCallback (Callback f) = f
 
-instance functorCallback :: Functor Callback where
+instance Functor Callback where
   map f c = mkCallback \cb -> runCallback c (cb <<< f)
 
 -- | A callback that will never be resolved
@@ -64,7 +63,7 @@ never = mkCallback mempty
 -- NOTE: We currently have no monadic instance for callbacks
 -- Remember: The monadic instance *must* agree with the applicative instance
 
-instance widgetShiftMap :: ShiftMap (Widget v) (Widget v) where
+instance ShiftMap (Widget v) (Widget v) where
   shiftMap f = f identity
 
 -- A Widget is basically a callback that returns a view or a return value
@@ -86,20 +85,20 @@ mkWidget e = Widget (Callback e)
 mapView :: forall u v a. (u -> v) -> Widget u a -> Widget v a
 mapView f (Widget w) = Widget (map (mapViewResult f) w)
 
-instance applyWidget :: Apply (Widget v) where
+instance Apply (Widget v) where
   apply = ap
 
-instance widgetMonad :: Monad (Widget v)
+instance Monad (Widget v)
 
-instance applicativeWidget :: Applicative (Widget v) where
+instance Applicative (Widget v) where
   pure a = mkWidget \cb -> cb (Completed a) $> pure mempty
 
-instance monadRecWidget :: MonadRec (Widget v) where
+instance MonadRec (Widget v) where
   tailRecM k a = k a >>= case _ of
     Loop x -> tailRecM k x
     Done y -> pure y
 
-instance bindWidget :: Bind (Widget v) where
+instance Bind (Widget v) where
   bind m f = mkWidget \cb -> do
     -- CancelerRef starts out as a canceler for A, then becomes canceler for B
     cancelerRef <- Ref.new mempty
@@ -140,7 +139,7 @@ initialised = case _ of
   Initialising -> Initialised
   a -> a
 
-instance widgetMultiAlternative :: Monoid v => MultiAlternative (Widget v) where
+instance Monoid v => MultiAlternative (Widget v) where
   orr :: forall a. Array (Widget v a) -> Widget v a
   orr widgets = mkWidget \cb -> do
     viewsRef <- Ref.new (A.replicate (A.length widgets) mempty)
@@ -169,22 +168,21 @@ instance widgetMultiAlternative :: Monoid v => MultiAlternative (Widget v) where
     cb (View (fold views))
     pure runCancelers
 
-instance widgetSemigroup :: (Monoid v) => Semigroup (Widget v a) where
+instance (Monoid v) => Semigroup (Widget v a) where
   append w1 w2 = orr [ w1, w2 ]
 
-instance widgetMonoid :: (Monoid v) => Monoid (Widget v a) where
+instance (Monoid v) => Monoid (Widget v a) where
   mempty = empty
 
-instance widgetAlt :: (Monoid v) => Alt (Widget v) where
+instance (Monoid v) => Alt (Widget v) where
   alt = append
 
-instance widgetPlus :: (Monoid v) => Plus (Widget v) where
+instance (Monoid v) => Plus (Widget v) where
   empty = display mempty
 
-instance widgetAlternative :: (Monoid v) => Alternative (Widget v)
+instance (Monoid v) => Alternative (Widget v)
 
--- Sync eff
-instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
+instance (Monoid v) => MonadEffect (Widget v) where
   liftEffect eff = mkWidget \cb -> do
     a <- eff
     cb (Completed a)
