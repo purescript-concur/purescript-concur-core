@@ -1,0 +1,27 @@
+package:
+  name: concur-core
+  dependencies:
+    - arrays
+    - control
+    - effect
+    - either
+    - foldable-traversable
+    - identity
+    - maybe
+    - newtype
+    - prelude
+    - profunctor-lenses
+    - refs
+    - tailrec
+    - transformers
+    - tuples
+    - unsafe-reference
+  test:
+    main: Test.Main
+    dependencies:
+      - console
+      - spec
+workspace:
+  packageSet:
+    registry: 61.3.1
+  extraPackages: {}
