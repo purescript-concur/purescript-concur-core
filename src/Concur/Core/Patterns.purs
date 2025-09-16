@@ -1,24 +1,30 @@
 module Concur.Core.Patterns where
 
 import Concur.Core (Result(..), Widget, mkWidget)
+import Concur.Core.Types (runWidget)
 import Control.Alt (class Alt, (<|>))
 import Control.Applicative (pure)
 import Control.Bind (bind, discard, (>>=))
 import Control.Monad (class Monad)
+import Control.MonadFix (fixEffect)
 import Control.Plus (class Plus)
 import Data.Array as Array
 import Data.Either (Either(..), either)
-import Data.Function (flip, ($), (<<<), (>>>))
+import Data.Foldable (fold)
+import Data.Function (applyFlipped, flip, (#), ($), (<<<), (>>>))
 import Data.Functor ((<$>))
 import Data.Lens (Lens')
 import Data.Lens as L
-import Data.Monoid (class Monoid)
+import Data.Maybe (fromMaybe)
+import Data.Monoid (class Monoid, mempty)
 import Data.Newtype (class Newtype, un)
 import Data.Semigroup ((<>))
 import Data.Traversable (traverse_)
+import Data.TraversableWithIndex (forWithIndex)
 import Data.Unit (Unit, unit)
 import Effect (Effect)
 import Effect.Class (class MonadEffect, liftEffect)
+import Effect.Ref (Ref)
 import Effect.Ref as Ref
 import Unsafe.Reference (unsafeRefEq)
 
@@ -150,4 +156,51 @@ with wire f = do
   go a = do
     res <- (Left <$> f a) <|> (Right <$> receive wire)
     either pure go res
+
+---
+-- RESUMABLE WIDGETS (WIP)
+
+type ResumableWidget v a =
+  { handlerRef :: Ref (Result v a -> Effect Unit)
+  , view :: Ref v
+  , canceler :: Effect Unit
+  }
+
+resumeResumable :: forall v a. ResumableWidget v a -> Widget v a
+resumeResumable { handlerRef, view, canceler } = mkWidget \cb -> do
+  Ref.write cb handlerRef
+  v <- Ref.read view
+  cb (View v)
+  pure canceler
+
+suspendResumable :: forall v a. ResumableWidget v a -> Effect Unit
+suspendResumable { handlerRef } = Ref.write mempty handlerRef
+
+cancelResumable :: forall v a. ResumableWidget v a -> Effect Unit
+cancelResumable { canceler } = canceler
+
+runToResumable :: forall v a. Widget v a -> Ref v -> (Result v a -> Effect Unit) -> Effect (ResumableWidget v a)
+runToResumable w view handler = do
+  handlerRef <- Ref.new handler
+  canceler <- runWidget w \res -> Ref.read handlerRef >>= applyFlipped res
+  pure { handlerRef, view, canceler }
+
+resumableOrr :: forall v a. Monoid v => Array (Widget v a) -> Widget v { val :: a, others :: Array (ResumableWidget v a) }
+resumableOrr widgets = mkWidget \cb -> do
+  viewsRef <- Ref.new (Array.replicate (Array.length widgets) mempty)
+  resumables <- fixEffect \resumables -> forWithIndex widgets \i w -> do
+    viewRef <- Ref.new mempty
+    fixEffect \s -> runToResumable w viewRef case _ of
+      View v -> do
+        Ref.write v viewRef
+        views <- Ref.read viewsRef
+        Array.updateAt i v views # traverse_ \newViews -> do
+          Ref.write newViews viewsRef
+          cb (View (fold newViews))
+      Completed val -> do
+        cancelResumable (s unit)
+        let others = fromMaybe (resumables unit) $ Array.deleteAt i (resumables unit)
+        traverse_ suspendResumable others
+        cb (Completed { val, others })
+  pure do traverse_ cancelResumable resumables
 
