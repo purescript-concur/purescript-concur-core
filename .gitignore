@@ -15,3 +15,5 @@ html/index.js
 .cache
 dist
 /.psc-ide-port
+.devenv
+.devenv.flake.nix
